@@ -4,26 +4,42 @@ import (
 	"errors"
 	"time"
 
+	"fmt"
 	"github.com/discoviking/fsm"
-	"github.com/stefankopieczek/gossip/base"
-	"github.com/stefankopieczek/gossip/log"
-	"github.com/stefankopieczek/gossip/timing"
-	"github.com/stefankopieczek/gossip/transport"
+	"github.com/ghettovoice/gossip/base"
+	"github.com/ghettovoice/gossip/log"
+	"github.com/ghettovoice/gossip/timing"
+	"github.com/ghettovoice/gossip/transport"
+	"strings"
 )
 
 // Generic Client Transaction
+
+const RFC3261MagicCookie = "z9hG4bK"
 
 const (
 	T1 = 500 * time.Millisecond
 	T2 = 4 * time.Second
 )
 
+type txKey []interface{}
+
 type Transaction interface {
+	log.WithLocalLogger
 	Receive(m base.SipMessage)
 	Origin() *base.Request
 	Destination() string
 	Transport() transport.Manager
 	Delete()
+	Key() (txKey, error)
+	// Helper getters
+	SipVersion() string
+	CallId() (*base.CallId, error)
+	Via() (*base.ViaHeader, error)
+	Branch() (base.MaybeString, error)
+	From() (*base.FromHeader, error)
+	To() (*base.ToHeader, error)
+	CSeq() (*base.CSeq, error)
 }
 
 type transaction struct {
@@ -33,6 +49,10 @@ type transaction struct {
 	dest      string         // Of the form hostname:port
 	transport transport.Manager
 	tm        *Manager
+}
+
+func (tx *transaction) Log() log.Logger {
+	return tx.origin.Log().WithField("tx-ptr", fmt.Sprintf("%p", tx))
 }
 
 func (tx *transaction) Origin() *base.Request {
@@ -47,12 +67,35 @@ func (tx *transaction) Transport() transport.Manager {
 	return tx.transport
 }
 
+func (tx *transaction) SipVersion() string {
+	return tx.origin.SipVersion()
+}
+func (tx *transaction) CallId() (*base.CallId, error) {
+	return tx.origin.CallId()
+}
+func (tx *transaction) Via() (*base.ViaHeader, error) {
+	return tx.origin.Via()
+}
+func (tx *transaction) Branch() (base.MaybeString, error) {
+	return tx.origin.Branch()
+}
+func (tx *transaction) From() (*base.FromHeader, error) {
+	return tx.origin.From()
+}
+func (tx *transaction) To() (*base.ToHeader, error) {
+	return tx.origin.To()
+}
+func (tx *transaction) CSeq() (*base.CSeq, error) {
+	return tx.origin.CSeq()
+}
+
 func (tx *ServerTransaction) Delete() {
+	tx.Log().Debugf("deleting transaction %p from manager %p", tx, tx.tm)
 	tx.tm.delTx(tx)
 }
 
 func (tx *ClientTransaction) Delete() {
-	log.Warn("Tx: %p, tm: %p", tx, tx.tm)
+	tx.Log().Debugf("deleting transaction %p from manager %p", tx, tx.tm)
 	tx.tm.delTx(tx)
 }
 
@@ -82,7 +125,7 @@ type ServerTransaction struct {
 func (tx *ServerTransaction) Receive(m base.SipMessage) {
 	r, ok := m.(*base.Request)
 	if !ok {
-		log.Warn("Client transaction received request")
+		tx.Log().Warn("client transaction received request")
 	}
 
 	var input fsm.Input = fsm.NO_INPUT
@@ -93,7 +136,7 @@ func (tx *ServerTransaction) Receive(m base.SipMessage) {
 		input = server_input_ack
 		tx.ack <- r
 	default:
-		log.Warn("Invalid message correlated to server transaction.")
+		tx.Log().Warn("invalid message correlated to server transaction.")
 	}
 
 	tx.fsm.Spin(input)
@@ -115,6 +158,7 @@ func (tx *ServerTransaction) Respond(r *base.Response) {
 	tx.fsm.Spin(input)
 }
 
+// Ack returns channel for ACK requests on non-2xx responses - RFC 3261 - 17.1.1.3
 func (tx *ServerTransaction) Ack() <-chan *base.Request {
 	return (<-chan *base.Request)(tx.ack)
 }
@@ -122,7 +166,7 @@ func (tx *ServerTransaction) Ack() <-chan *base.Request {
 func (tx *ClientTransaction) Receive(m base.SipMessage) {
 	r, ok := m.(*base.Response)
 	if !ok {
-		log.Warn("Client transaction received request")
+		tx.Log().Warn("client transaction received request")
 	}
 
 	tx.lastResp = r
@@ -142,7 +186,7 @@ func (tx *ClientTransaction) Receive(m base.SipMessage) {
 
 // Resend the originating request.
 func (tx *ClientTransaction) resend() {
-	log.Info("Client transaction %p resending request: %v", tx, tx.origin.Short())
+	tx.Log().Infof("client transaction %p resending request: %v", tx, tx.origin.Short())
 	err := tx.transport.Send(tx.dest, tx.origin)
 	if err != nil {
 		tx.fsm.Spin(client_input_transport_err)
@@ -151,29 +195,32 @@ func (tx *ClientTransaction) resend() {
 
 // Pass up the most recently received response to the TU.
 func (tx *ClientTransaction) passUp() {
-	log.Info("Client transaction %p passing up response: %v", tx, tx.lastResp.Short())
+	tx.Log().Infof("client transaction %p passing up response: %v", tx, tx.lastResp.Short())
 	tx.tu <- tx.lastResp
 }
 
 // Send an error to the TU.
 func (tx *ClientTransaction) transportError() {
-	log.Info("Client transaction %p had a transport-level error", tx)
-	tx.tu_err <- errors.New("failed to send message.")
+	tx.Log().Infof("client transaction %p had a transport-level error", tx)
+	tx.tu_err <- errors.New("failed to send message")
 }
 
 // Inform the TU that the transaction timed out.
 func (tx *ClientTransaction) timeoutError() {
-	log.Info("Client transaction %p timed out", tx)
-	tx.tu_err <- errors.New("transaction timed out.")
+	tx.Log().Infof("client transaction %p timed out", tx)
+	tx.tu_err <- errors.New("transaction timed out")
 }
 
-// Send an automatic ACK.
+// Send an automatic ACK - RFC 3261 - 17.1.1.3.
 func (tx *ClientTransaction) Ack() {
-	ack := base.NewRequest(base.ACK,
+	ack := base.NewRequest(
+		base.ACK,
 		tx.origin.Recipient,
-		tx.origin.SipVersion,
+		tx.origin.SipVersion(),
 		[]base.SipHeader{},
-		"")
+		"",
+		tx.Log(),
+	)
 
 	// Copy headers from original request.
 	// TODO: Safety
@@ -201,4 +248,24 @@ func (tx *ClientTransaction) Responses() <-chan *base.Response {
 // Return the channel we send errors on.
 func (tx *ClientTransaction) Errors() <-chan error {
 	return (<-chan error)(tx.tu_err)
+}
+
+// Key returns transaction key - RFC 17.2.3.
+func (tx *ServerTransaction) Key() (txKey, error) {
+	var key txKey
+
+	if branch, err := tx.Branch(); err == nil {
+		if branchStr, ok := branch.(base.String); ok && branchStr.String() != "" &&
+			strings.HasPrefix(branchStr.String(), RFC3261MagicCookie) &&
+			strings.TrimPrefix(branchStr.String(), RFC3261MagicCookie) != "" {
+			via, err := tx.Via()
+			if err != nil {
+				return nil, fmt.Errorf("can't form transaction key: %s", err)
+			}
+
+			hop := (*via)[0]
+
+			return txKey{branchStr.String(), fmt.Sprintf("%v:%v", hop.Host, hop.Port), tx.Origin().Method}, nil
+		}
+	}
 }

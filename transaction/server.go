@@ -4,9 +4,8 @@ import (
 	"errors"
 
 	"github.com/discoviking/fsm"
-	"github.com/stefankopieczek/gossip/base"
-	"github.com/stefankopieczek/gossip/log"
-	"github.com/stefankopieczek/gossip/timing"
+	"github.com/ghettovoice/gossip/base"
+	"github.com/ghettovoice/gossip/timing"
 )
 
 // SIP Server Transaction FSM
@@ -102,6 +101,7 @@ func (tx *ServerTransaction) initFSM() {
 
 func (tx *ServerTransaction) initInviteFSM() {
 	// Define States
+	tx.Log().Debugf("initialising server INVITE transaction %p FSM", tx)
 
 	// Proceeding
 	server_state_def_proceeding := fsm.State{
@@ -163,7 +163,7 @@ func (tx *ServerTransaction) initInviteFSM() {
 		server_state_def_terminated,
 	)
 	if err != nil {
-		log.Severe("Failed to define transaction FSM. Transaction will be dropped.")
+		tx.Log().Errorf("failed to define transaction FSM: transaction %p will be dropped, error: %s", tx, err.Error())
 		return
 	}
 
@@ -172,6 +172,7 @@ func (tx *ServerTransaction) initInviteFSM() {
 
 func (tx *ServerTransaction) initNonInviteFSM() {
 	// Define States
+	tx.Log().Debugf("initialising server non-INVITE transaction %p FSM", tx)
 
 	// Trying
 	server_state_def_trying := fsm.State{
@@ -230,7 +231,7 @@ func (tx *ServerTransaction) initNonInviteFSM() {
 		server_state_def_terminated,
 	)
 	if err != nil {
-		log.Severe("Failed to define transaction FSM. Transaction will be dropped.")
+		tx.Log().Errorf("failed to define transaction FSM: transaction %p will be dropped, error: %s", tx, err.Error())
 		return
 	}
 

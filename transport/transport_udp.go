@@ -1,13 +1,12 @@
 package transport
 
 import (
-	"github.com/stefankopieczek/gossip/base"
-	"github.com/stefankopieczek/gossip/log"
-	"github.com/stefankopieczek/gossip/parser"
-)
-
-import (
 	"net"
+
+	"github.com/ghettovoice/gossip/base"
+	"github.com/ghettovoice/gossip/log"
+	"github.com/ghettovoice/gossip/parser"
+	"github.com/ghettovoice/gossip/utils"
 )
 
 type Udp struct {
@@ -42,7 +41,9 @@ func (udp *Udp) IsStreamed() bool {
 }
 
 func (udp *Udp) Send(addr string, msg base.SipMessage) error {
-	log.Debug("Sending message %s to %s", msg.Short(), addr)
+	msg.Log().Infof("sending message to %v: %v", addr, msg.Short())
+	msg.Log().Debugf("sending message:\r\n%v", msg.String())
+
 	raddr, err := net.ResolveUDPAddr("udp", addr)
 	if err != nil {
 		return err
@@ -61,30 +62,39 @@ func (udp *Udp) Send(addr string, msg base.SipMessage) error {
 }
 
 func (udp *Udp) listen(conn *net.UDPConn) {
-	log.Info("Begin listening for UDP on address %s", conn.LocalAddr())
+	log.Infof("begin listening for UDP on address %s", conn.LocalAddr())
 
 	buffer := make([]byte, c_BUFSIZE)
-	for {
+	iter := func(conn *net.UDPConn, buffer []byte) bool {
+		logger := log.WithField("packet-tag", utils.RandStr(4, "pkt-"))
+		// eat bytes
 		num, _, err := conn.ReadFromUDP(buffer)
 		if err != nil {
 			if udp.stop {
-				log.Info("Stopped listening for UDP on %s", conn.LocalAddr)
-				break
+				log.Infof("stopped listening for UDP on %s", conn.LocalAddr)
+				return false
 			} else {
-				log.Severe("Failed to read from UDP buffer: " + err.Error())
-				continue
+				logger.Errorf("failed to read from UDP buffer: %s", err.Error())
+				return true
 			}
 		}
 
 		pkt := append([]byte(nil), buffer[:num]...)
 		go func() {
-			msg, err := parser.ParseMessage(pkt)
+			msg, err := parser.ParseMessage(pkt, logger)
 			if err != nil {
-				log.Warn("Failed to parse SIP message: %s", err.Error())
+				logger.Warnf("failed to parse SIP message: %s", err.Error())
 			} else {
 				udp.output <- msg
 			}
 		}()
+
+		return true
+	}
+	for {
+		if !iter(conn, buffer) {
+			break
+		}
 	}
 }
 

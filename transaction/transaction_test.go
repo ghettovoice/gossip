@@ -2,14 +2,15 @@ package transaction
 
 import (
 	"fmt"
-	"github.com/stefankopieczek/gossip/base"
-	"github.com/stefankopieczek/gossip/log"
-	"github.com/stefankopieczek/gossip/parser"
-	"github.com/stefankopieczek/gossip/timing"
-	"github.com/stefankopieczek/gossip/transport"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/ghettovoice/gossip/base"
+	"github.com/ghettovoice/gossip/log"
+	"github.com/ghettovoice/gossip/parser"
+	"github.com/ghettovoice/gossip/timing"
+	"github.com/ghettovoice/gossip/transport"
 )
 
 // UTs for transaction layer.
@@ -165,7 +166,7 @@ func assertNoError(t *testing.T, err error) {
 }
 
 func message(rawMsg []string) (base.SipMessage, error) {
-	return parser.ParseMessage([]byte(strings.Join(rawMsg, "\r\n")))
+	return parser.ParseMessage([]byte(strings.Join(rawMsg, "\r\n")), log.StandardLogger())
 }
 
 func request(rawMsg []string) (*base.Request, error) {

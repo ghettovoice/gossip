@@ -2,9 +2,8 @@ package transaction
 
 import (
 	"github.com/discoviking/fsm"
-	"github.com/stefankopieczek/gossip/base"
-	"github.com/stefankopieczek/gossip/log"
-	"github.com/stefankopieczek/gossip/timing"
+	"github.com/ghettovoice/gossip/base"
+	"github.com/ghettovoice/gossip/timing"
 )
 
 // SIP Client Transaction FSM
@@ -40,13 +39,13 @@ func (tx *ClientTransaction) initFSM() {
 }
 
 func (tx *ClientTransaction) initInviteFSM() {
-	log.Debug("Initialising client INVITE transaction FSM")
+	tx.Log().Debug("initialising client INVITE transaction %p FSM", tx)
 
 	// Define Actions
 
 	// Resend the request.
 	act_resend := func() fsm.Input {
-		log.Debug("Client transaction %p, act_resend", tx)
+		tx.Log().Debugf("client transaction %p, act_resend", tx)
 		tx.timer_a_time *= 2
 		tx.timer_a.Reset(tx.timer_a_time)
 		tx.resend()
@@ -55,7 +54,7 @@ func (tx *ClientTransaction) initInviteFSM() {
 
 	// Just pass up the latest response.
 	act_passup := func() fsm.Input {
-		log.Debug("Client transaction %p, act_passup", tx)
+		tx.Log().Debugf("client transaction %p, act_passup", tx)
 		tx.passUp()
 		return fsm.NO_INPUT
 	}
@@ -63,7 +62,7 @@ func (tx *ClientTransaction) initInviteFSM() {
 	// Handle 300+ responses.
 	// Pass up response and send ACK, start timer D.
 	act_300 := func() fsm.Input {
-		log.Debug("Client transaction %p, act_300", tx)
+		tx.Log().Debugf("client transaction %p, act_300", tx)
 		tx.passUp()
 		tx.Ack()
 		if tx.timer_d != nil {
@@ -77,28 +76,28 @@ func (tx *ClientTransaction) initInviteFSM() {
 
 	// Send an ACK.
 	act_ack := func() fsm.Input {
-		log.Debug("Client transaction %p, act_ack", tx)
+		tx.Log().Debugf("client transaction %p, act_ack", tx)
 		tx.Ack()
 		return fsm.NO_INPUT
 	}
 
 	// Send up transport failure error.
 	act_trans_err := func() fsm.Input {
-		log.Debug("Client transaction %p, act_trans_err", tx)
+		tx.Log().Debugf("client transaction %p, act_trans_err", tx)
 		tx.transportError()
 		return client_input_delete
 	}
 
 	// Send up timeout error.
 	act_timeout := func() fsm.Input {
-		log.Debug("Client transaction %p, act_timeout", tx)
+		tx.Log().Debugf("client transaction %p, act_timeout", tx)
 		tx.timeoutError()
 		return client_input_delete
 	}
 
 	// Pass up the response and delete the transaction.
 	act_passup_delete := func() fsm.Input {
-		log.Debug("Client transaction %p, act_passup_delete", tx)
+		tx.Log().Debugf("client transaction %p, act_passup_delete", tx)
 		tx.passUp()
 		tx.Delete()
 		return fsm.NO_INPUT
@@ -106,7 +105,7 @@ func (tx *ClientTransaction) initInviteFSM() {
 
 	// Just delete the transaction.
 	act_delete := func() fsm.Input {
-		log.Debug("Client transaction %p, act_delete", tx)
+		tx.Log().Debugf("client transaction %p, act_delete", tx)
 		tx.Delete()
 		return fsm.NO_INPUT
 	}
@@ -173,14 +172,14 @@ func (tx *ClientTransaction) initInviteFSM() {
 	)
 
 	if err != nil {
-		log.Severe("Failure to define INVITE client transaction fsm: %s", err.Error())
+		tx.Log().Errorf("failure to define INVITE client transaction %p fsm: %s", tx, err.Error())
 	}
 
 	tx.fsm = fsm
 }
 
 func (tx *ClientTransaction) initNonInviteFSM() {
-	log.Debug("Initialising client non-INVITE transaction FSM")
+	tx.Log().Debugf("initialising client non-INVITE transaction %p FSM", tx)
 
 	// Define Actions
 
@@ -296,7 +295,7 @@ func (tx *ClientTransaction) initNonInviteFSM() {
 	)
 
 	if err != nil {
-		log.Severe("Failure to define INVITE client transaction fsm: %s", err.Error())
+		tx.Log().Errorf("failure to define INVITE client transaction %p fsm: %s", tx, err.Error())
 	}
 
 	tx.fsm = fsm

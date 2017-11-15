@@ -1,7 +1,9 @@
 package testutils
 
-import "net"
-import "time"
+import (
+	"net"
+	"time"
+)
 
 type DummyConn struct{}
 

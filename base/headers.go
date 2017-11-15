@@ -1,14 +1,14 @@
 package base
 
 import (
-	"github.com/stefankopieczek/gossip/log"
-	"github.com/stefankopieczek/gossip/utils"
-)
+	"bytes"
+	"fmt"
+	"strconv"
+	"strings"
 
-import "bytes"
-import "fmt"
-import "strconv"
-import "strings"
+	"github.com/ghettovoice/gossip/log"
+	"github.com/ghettovoice/gossip/utils"
+)
 
 // Whitespace recognised by SIP protocol.
 const c_ABNF_WS = " \t"
@@ -105,7 +105,7 @@ type SipUri struct {
 }
 
 func copyWithNil(params Params) Params {
-	if (params == nil) {
+	if params == nil {
 		return NewParams()
 	}
 	return params.Copy()
@@ -299,7 +299,7 @@ func (p *params) Copy() Params {
 		if v, ok := p.Get(k); ok {
 			dup.Add(k, v)
 		} else {
-			log.Severe("Internal consistency error. Key %v present in param.Keys() but failed to Get()!", k)
+			log.Errorf("internal consistency error: key %v present in param.Keys() but failed to Get()", k)
 		}
 	}
 
@@ -315,7 +315,7 @@ func (p *params) ToString(sep uint8) string {
 	for _, k := range p.Keys() {
 		v, ok := p.Get(k)
 		if !ok {
-			log.Severe("Internal consistency error. Key %v present in param.Keys() but failed to Get()!", k)
+			log.Errorf("internal consistency error: key %v present in param.Keys() but failed to Get()", k)
 			continue
 		}
 

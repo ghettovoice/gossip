@@ -1,18 +1,16 @@
 package parser
 
 import (
-	"github.com/stefankopieczek/gossip/base"
-	"github.com/stefankopieczek/gossip/log"
-	"github.com/stefankopieczek/gossip/utils"
-)
-
-import (
 	"bytes"
 	"fmt"
 	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/ghettovoice/gossip/base"
+	"github.com/ghettovoice/gossip/log"
+	"github.com/ghettovoice/gossip/utils"
 )
 
 // The whitespace characters recognised by the Augmented Backus-Naur Form syntax
@@ -24,11 +22,11 @@ const c_ABNF_WS = " \t"
 const MAX_CSEQ = 2147483647
 
 // The buffer size of the parser input channel.
-const c_INPUT_CHAN_SIZE = 10
 
 // A Parser converts the raw bytes of SIP messages into base.SipMessage objects.
 // It allows
 type Parser interface {
+	log.WithLocalLogger
 	// Implements io.Writer. Queues the given bytes to be parsed.
 	// If the parser has terminated due to a previous fatal error, it will return n=0 and an appropriate error.
 	// Otherwise, it will return n=len(p) and err=nil.
@@ -71,10 +69,10 @@ func defaultHeaderParsers() map[string]HeaderParser {
 // This is more costly than reusing a parser, but is necessary when we do not
 // have a guarantee that all messages coming over a connection are from the
 // same endpoint (e.g. UDP).
-func ParseMessage(msgData []byte) (base.SipMessage, error) {
+func ParseMessage(msgData []byte, logger log.Logger) (base.SipMessage, error) {
 	output := make(chan base.SipMessage, 0)
 	errors := make(chan error, 0)
-	parser := NewParser(output, errors, false)
+	parser := NewParser(output, errors, false, logger)
 	defer parser.Stop()
 
 	parser.Write(msgData)
@@ -100,8 +98,8 @@ func ParseMessage(msgData []byte) (base.SipMessage, error) {
 
 // 'streamed' should be set to true whenever the caller cannot reliably identify the starts and ends of messages from the transport frames,
 // e.g. when using streamed protocols such as TCP.
-func NewParser(output chan<- base.SipMessage, errs chan<- error, streamed bool) Parser {
-	p := parser{streamed: streamed}
+func NewParser(output chan<- base.SipMessage, errs chan<- error, streamed bool, logger log.Logger) Parser {
+	p := parser{streamed: streamed, log: logger}
 
 	// Configure the parser with the standard set of header parsers.
 	p.headerParsers = make(map[string]HeaderParser)
@@ -114,12 +112,12 @@ func NewParser(output chan<- base.SipMessage, errs chan<- error, streamed bool) 
 
 	if !streamed {
 		// If we're not in streaming mode, set up a channel so the Write method can pass calculated body lengths to the parser.
-		p.bodyLengths.Init()
+		p.bodyLengths.Init(p.Log())
 	}
 
 	// Create a managed buffer to allow message data to be asynchronously provided to the parser, and
 	// to allow the parser to block until enough data is available to parse.
-	p.input = newParserBuffer()
+	p.input = newParserBuffer(p.Log())
 
 	// Wait for input a line at a time, and produce SipMessages to send down p.output.
 	go p.parse(streamed)
@@ -136,15 +134,20 @@ type parser struct {
 	errs          chan<- error
 	terminalErr   error
 	stopped       bool
+	log           log.Logger
+}
+
+func (p *parser) Log() log.Logger {
+	return p.log
 }
 
 func (p *parser) Write(data []byte) (n int, err error) {
 	if p.terminalErr != nil {
 		// The parser has stopped due to a terminal error. Return it.
-		log.Fine("Parser %p ignores %d new bytes due to previous terminal error: %s", p, len(data), p.terminalErr.Error())
+		p.Log().Warnf("parser %p ignores %d new bytes due to previous terminal error: %s", p, len(data), p.terminalErr.Error())
 		return 0, p.terminalErr
 	} else if p.stopped {
-		return 0, fmt.Errorf("Cannot write data to stopped parser %p", p)
+		return 0, fmt.Errorf("cannot write data to stopped parser %p", p)
 	}
 
 	if !p.streamed {
@@ -160,10 +163,10 @@ func (p *parser) Write(data []byte) (n int, err error) {
 // The parser will not release its resources until Stop() is called,
 // even if the parser object itself is garbage collected.
 func (p *parser) Stop() {
-	log.Debug("Stopping parser %p", p)
+	p.Log().Debugf("stopping parser %p", p)
 	p.stopped = true
 	p.input.Stop()
-	log.Debug("Parser %p stopped", p)
+	p.Log().Debugf("parser %p stopped", p)
 }
 
 // Consume input lines one at a time, producing base.SipMessage objects and sending them down p.output.
@@ -175,17 +178,17 @@ func (p *parser) parse(requireContentLength bool) {
 		startLine, err := p.input.NextLine()
 
 		if err != nil {
-			log.Debug("Parser %p stopped", p)
+			p.Log().Debugf("parser %p stopped", p)
 			break
 		}
 
 		if isRequest(startLine) {
 			method, recipient, sipVersion, err := parseRequestLine(startLine)
-			message = base.NewRequest(method, recipient, sipVersion, []base.SipHeader{}, "")
+			message = base.NewRequest(method, recipient, sipVersion, []base.SipHeader{}, "", p.Log())
 			p.terminalErr = err
 		} else if isResponse(startLine) {
 			sipVersion, statusCode, reason, err := parseStatusLine(startLine)
-			message = base.NewResponse(sipVersion, statusCode, reason, []base.SipHeader{}, "")
+			message = base.NewResponse(sipVersion, statusCode, reason, []base.SipHeader{}, "", p.Log())
 			p.terminalErr = err
 		} else {
 			p.terminalErr = fmt.Errorf("transmission beginning '%s' is not a SIP message", startLine)
@@ -209,7 +212,7 @@ func (p *parser) parse(requireContentLength bool) {
 				if err == nil {
 					headers = append(headers, newHeaders...)
 				} else {
-					log.Debug("Skipping header '%s' due to error: %s", buffer.String(), err.Error())
+					p.Log().Debugf("skipping header '%s' due to error: %s", buffer.String(), err.Error())
 				}
 				buffer.Reset()
 			}
@@ -219,7 +222,7 @@ func (p *parser) parse(requireContentLength bool) {
 			line, err := p.input.NextLine()
 
 			if err != nil {
-				log.Debug("Parser %p stopped", p)
+				p.Log().Debugf("parser %p stopped", p)
 				break
 			}
 
@@ -242,7 +245,8 @@ func (p *parser) parse(requireContentLength bool) {
 			} else {
 				// This is a continuation line, but also the first line of the whole header section.
 				// Discard it and log.
-				log.Debug("Discarded unexpected continuation line '%s' at start of header block in message '%s'",
+				p.Log().Debugf(
+					"discarded unexpected continuation line '%s' at start of header block in message '%s'",
 					line,
 					message.Short())
 			}
@@ -250,7 +254,7 @@ func (p *parser) parse(requireContentLength bool) {
 
 		// Store the headers in the message object.
 		for _, header := range headers {
-			message.AddHeader(header)
+			message.SetHeader(header, true)
 		}
 
 		var contentLength int
@@ -260,12 +264,12 @@ func (p *parser) parse(requireContentLength bool) {
 			// Use the content-length header to identify the end of the message.
 			contentLengthHeaders := message.Headers("Content-Length")
 			if len(contentLengthHeaders) == 0 {
-				p.terminalErr = fmt.Errorf("Missing required content-length header on message %s", message.Short())
+				p.terminalErr = fmt.Errorf("missing required content-length header on message %s", message.Short())
 				p.errs <- p.terminalErr
 				break
 			} else if len(contentLengthHeaders) > 1 {
 				var errbuf bytes.Buffer
-				errbuf.WriteString("Multiple content-length headers on message ")
+				errbuf.WriteString("multiple content-length headers on message ")
 				errbuf.WriteString(message.Short())
 				errbuf.WriteString(":\n")
 				for _, header := range contentLengthHeaders {
@@ -287,17 +291,17 @@ func (p *parser) parse(requireContentLength bool) {
 		body, err := p.input.NextChunk(contentLength)
 
 		if err != nil {
-			log.Debug("Parsed %p stopped", p)
+			p.Log().Debugf("parsed %p stopped", p)
 			break
 		}
 
 		switch message.(type) {
 		case *base.Request:
-			message.(*base.Request).Body = body
+			message.(*base.Request).SetBody(body)
 		case *base.Response:
-			message.(*base.Response).Body = body
+			message.(*base.Response).SetBody(body)
 		default:
-			log.Severe("Internal error - message %s is neither a request type nor a response type", message.Short())
+			p.Log().Errorf("internal error - message %s is neither a request type nor a response type", message.Short())
 		}
 		p.output <- message
 	}
@@ -434,7 +438,7 @@ func ParseUri(uriStr string) (uri base.Uri, err error) {
 		sipUri, err = ParseSipUri(uriStr)
 		uri = &sipUri
 	default:
-		err = fmt.Errorf("Unsupported URI schema %s", uriStr[:colonIdx])
+		err = fmt.Errorf("unsupported URI schema %s", uriStr[:colonIdx])
 	}
 
 	return
@@ -483,12 +487,12 @@ func ParseSipUri(uriStr string) (uri base.SipUri, err error) {
 			// No password component; the whole of the user-info part before
 			// the '@' is a username.
 			user := uriStr[:endOfUserInfoPart]
-			uri.User = base.String{user}
+			uri.User = base.String{S: user}
 		} else {
 			user := uriStr[:endOfUsernamePart]
 			pwd := uriStr[endOfUsernamePart+1 : endOfUserInfoPart]
-			uri.User = base.String{user}
-			uri.Password = base.String{pwd}
+			uri.User = base.String{S: user}
+			uri.Password = base.String{S: pwd}
 		}
 		uriStr = uriStr[endOfUserInfoPart+1:]
 	}
@@ -630,7 +634,7 @@ parseLoop:
 			if parsingKey && permitSingletons {
 				params.Add(buffer.String(), base.NoString{})
 			} else if parsingKey {
-				err = fmt.Errorf("Singleton param '%s' when parsing params which disallow singletons: \"%s\"",
+				err = fmt.Errorf("singleton param '%s' when parsing params which disallow singletons: \"%s\"",
 					buffer.String(), source)
 				return
 			} else {
@@ -649,7 +653,7 @@ parseLoop:
 
 			if parsingKey {
 				// Quotes are never allowed in keys.
-				err = fmt.Errorf("Unexpected '\"' in parameter key in params \"%s\"", source)
+				err = fmt.Errorf("unexpected '\"' in parameter key in params \"%s\"", source)
 				return
 			}
 
@@ -673,11 +677,11 @@ parseLoop:
 
 		case '=':
 			if buffer.Len() == 0 {
-				err = fmt.Errorf("Key of length 0 in params \"%s\"", source)
+				err = fmt.Errorf("key of length 0 in params \"%s\"", source)
 				return
 			}
 			if !parsingKey {
-				err = fmt.Errorf("Unexpected '=' char in value token: \"%s\"", source)
+				err = fmt.Errorf("unexpected '=' char in value token: \"%s\"", source)
 				return
 			}
 			key = buffer.String()
@@ -697,11 +701,11 @@ parseLoop:
 	// The param string has ended. Check that it ended in a valid place, and then store off the
 	// contents of the buffer.
 	if inQuotes {
-		err = fmt.Errorf("Unclosed quotes in parameter string: %s", source)
+		err = fmt.Errorf("unclosed quotes in parameter string: %s", source)
 	} else if parsingKey && permitSingletons {
 		params.Add(buffer.String(), base.NoString{})
 	} else if parsingKey {
-		err = fmt.Errorf("Singleton param '%s' when parsing params which disallow singletons: \"%s\"",
+		err = fmt.Errorf("singleton param '%s' when parsing params which disallow singletons: \"%s\"",
 			buffer.String(), source)
 	} else {
 		value := buffer.String()
@@ -714,12 +718,12 @@ parseLoop:
 // (SIP messages containing multiple headers of the same type can express them as a
 // single header containing a comma-separated argument list).
 func (p *parser) parseHeader(headerText string) (headers []base.SipHeader, err error) {
-	log.Debug("Parser %p parsing header \"%s\"", p, headerText)
+	p.Log().Debugf("parser %p parsing header \"%s\"", p, headerText)
 	headers = make([]base.SipHeader, 0)
 
 	colonIdx := strings.Index(headerText, ":")
 	if colonIdx == -1 {
-		err = fmt.Errorf("Field name with no value in header: %s", headerText)
+		err = fmt.Errorf("field name with no value in header: %s", headerText)
 		return
 	}
 
@@ -732,8 +736,8 @@ func (p *parser) parseHeader(headerText string) (headers []base.SipHeader, err e
 	} else {
 		// We have no registered parser for this header type,
 		// so we encapsulate the header data in a GenericHeader struct.
-		log.Debug("Parser %p has no parser for header type %s", p, fieldName)
-		header := base.GenericHeader{fieldName, fieldText}
+		p.Log().Debugf("parser %p has no parser for header type %s", p, fieldName)
+		header := base.GenericHeader{HeaderName: fieldName, Contents: fieldText}
 		headers = []base.SipHeader{&header}
 	}
 
@@ -759,7 +763,7 @@ func parseAddressHeader(headerName string, headerText string) (
 			// This shouldn't happen unless parseAddressValues is bugged.
 			err = fmt.Errorf("internal parser error: parsed param mismatch. "+
 				"%d display names, %d uris and %d param sets "+
-				"in %s.",
+				"in %s",
 				len(displayNames), len(uris), len(paramSets),
 				headerText)
 			return
@@ -774,7 +778,7 @@ func parseAddressHeader(headerName string, headerText string) (
 				if idx > 0 {
 					// Only a single To header is permitted in a SIP message.
 					return nil,
-						fmt.Errorf("Multiple to: headers in message:\n%s: %s",
+						fmt.Errorf("multiple to: headers in message:\n%s: %s",
 							headerName, headerText)
 				}
 				switch uris[idx].(type) {
@@ -784,16 +788,16 @@ func parseAddressHeader(headerName string, headerText string) (
 						"header: %s", headerText)
 					return
 				default:
-					toHeader := base.ToHeader{displayNames[idx],
-						uris[idx],
-						paramSets[idx]}
+					toHeader := base.ToHeader{DisplayName: displayNames[idx],
+						Address: uris[idx],
+						Params:  paramSets[idx]}
 					header = &toHeader
 				}
 			} else if headerName == "from" || headerName == "f" {
 				if idx > 0 {
 					// Only a single From header is permitted in a SIP message.
 					return nil,
-						fmt.Errorf("Multiple from: headers in message:\n%s: %s",
+						fmt.Errorf("multiple from: headers in message:\n%s: %s",
 							headerName, headerText)
 				}
 				switch uris[idx].(type) {
@@ -803,9 +807,9 @@ func parseAddressHeader(headerName string, headerText string) (
 						"header: %s", headerText)
 					return
 				default:
-					fromHeader := base.FromHeader{displayNames[idx],
-						uris[idx],
-						paramSets[idx]}
+					fromHeader := base.FromHeader{DisplayName: displayNames[idx],
+						Address: uris[idx],
+						Params:  paramSets[idx]}
 					header = &fromHeader
 				}
 			} else if headerName == "contact" || headerName == "m" {
@@ -825,14 +829,14 @@ func parseAddressHeader(headerName string, headerText string) (
 							return
 						}
 					}
-					contactHeader := base.ContactHeader{displayNames[idx],
-						uris[idx].(base.ContactUri),
-						paramSets[idx]}
+					contactHeader := base.ContactHeader{DisplayName: displayNames[idx],
+						Address: uris[idx].(base.ContactUri),
+						Params:  paramSets[idx]}
 					header = &contactHeader
 				default:
 					// URIs in contact headers are restricted to being either SIP URIs or 'Contact: *'.
 					return nil,
-						fmt.Errorf("Uri %s not valid in Contact header. Must be SIP uri or '*'", uris[idx].String())
+						fmt.Errorf("uri %s not valid in Contact header. Must be SIP uri or '*'", uris[idx].String())
 				}
 			}
 
@@ -1090,13 +1094,13 @@ func parseAddressValue(addressText string) (
 
 			if nextQuote == -1 {
 				// Unclosed quotes - parse error.
-				err = fmt.Errorf("Unclosed quotes in header text: %s",
+				err = fmt.Errorf("unclosed quotes in header text: %s",
 					addressTextCopy)
 				return
 			}
 
 			nameField := addressText[:nextQuote]
-			displayName = base.String{nameField}
+			displayName = base.String{S: nameField}
 			addressText = addressText[nextQuote+1:]
 		} else {
 			// The display name is unquoted, so it is comprised of
@@ -1106,7 +1110,7 @@ func parseAddressValue(addressText string) (
 			// however we don't check for them here since it doesn't impact parsing.
 			// May as well be lenient.
 			nameField := addressText[:firstAngleBracket]
-			displayName = base.String{strings.TrimSpace(nameField)}
+			displayName = base.String{S: strings.TrimSpace(nameField)}
 			addressText = addressText[firstAngleBracket:]
 		}
 	}
@@ -1120,7 +1124,7 @@ func parseAddressValue(addressText string) (
 		case base.String:
 			// The address must be in <angle brackets> if a display name is
 			// present, so this is an invalid address line.
-			err = fmt.Errorf("Invalid character '%c' following display "+
+			err = fmt.Errorf("invalid character '%c' following display "+
 				"name in address line; expected '<': %s",
 				addressText[0], addressTextCopy)
 			return
@@ -1199,6 +1203,7 @@ type delimiter struct {
 
 // Define common quote characters needed in parsing.
 var quotes_delim = delimiter{'"', '"'}
+
 var angles_delim = delimiter{'<', '>'}
 
 // Find the first instance of the target in the given text which is not enclosed in any delimiters
@@ -1224,7 +1229,7 @@ func findAnyUnescaped(text string, targets string, delims ...delimiter) int {
 		}
 
 		if escaped {
-			escaped = (text[idx] != endEscape)
+			escaped = text[idx] != endEscape
 			continue
 		} else {
 			endEscape, escaped = endChars[text[idx]]

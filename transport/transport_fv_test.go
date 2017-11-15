@@ -6,7 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/stefankopieczek/gossip/base"
+	"github.com/ghettovoice/gossip/base"
+	"github.com/ghettovoice/gossip/log"
 )
 
 type endpoint struct {
@@ -35,7 +36,7 @@ func TestMassUDP(t *testing.T) {
 				if !ok {
 					break recvloop
 				}
-				id, _ := strconv.ParseInt(msg.GetBody(), 10, 32)
+				id, _ := strconv.ParseInt(msg.Body(), 10, 32)
 				receivedIDs = append(receivedIDs, int(id))
 				if len(receivedIDs) >= NUM_MSGS {
 					break recvloop
@@ -66,9 +67,17 @@ func TestMassUDP(t *testing.T) {
 		uri := base.SipUri{User: base.String{"alice"}, Host: "127.0.0.1", Port: nil, UriParams: base.NewParams(), Headers: base.NewParams()}
 		for ii := 1; ii <= NUM_MSGS; ii++ {
 			from.Send(fmt.Sprintf("%s:%d", alice.host, alice.port),
-				base.NewRequest(base.ACK, &uri, "SIP/2.0",
-					[]base.SipHeader{base.ContentLength(len(fmt.Sprintf("%d", ii)))},
-					fmt.Sprintf("%d", ii)))
+				base.NewRequest(
+					base.ACK,
+					&uri,
+					"SIP/2.0",
+					[]base.SipHeader{
+						base.ContentLength(len(fmt.Sprintf("%d", ii))),
+					},
+					fmt.Sprintf("%d", ii),
+					log.StandardLogger(),
+				),
+			)
 
 			if ii%100 == 0 {
 				<-time.After(time.Millisecond)
