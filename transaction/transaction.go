@@ -5,15 +5,15 @@ import (
 	"time"
 
 	"fmt"
+
+	"strings"
+
 	"github.com/discoviking/fsm"
 	"github.com/ghettovoice/gossip/base"
 	"github.com/ghettovoice/gossip/log"
 	"github.com/ghettovoice/gossip/timing"
 	"github.com/ghettovoice/gossip/transport"
-	"strings"
 )
-
-// Generic Client Transaction
 
 const RFC3261MagicCookie = "z9hG4bK"
 
@@ -22,8 +22,6 @@ const (
 	T2 = 4 * time.Second
 )
 
-type txKey []interface{}
-
 type Transaction interface {
 	log.WithLocalLogger
 	Receive(m base.SipMessage)
@@ -31,15 +29,6 @@ type Transaction interface {
 	Destination() string
 	Transport() transport.Manager
 	Delete()
-	Key() (txKey, error)
-	// Helper getters
-	SipVersion() string
-	CallId() (*base.CallId, error)
-	Via() (*base.ViaHeader, error)
-	Branch() (base.MaybeString, error)
-	From() (*base.FromHeader, error)
-	To() (*base.ToHeader, error)
-	CSeq() (*base.CSeq, error)
 }
 
 type transaction struct {
@@ -65,28 +54,6 @@ func (tx *transaction) Destination() string {
 
 func (tx *transaction) Transport() transport.Manager {
 	return tx.transport
-}
-
-func (tx *transaction) SipVersion() string {
-	return tx.origin.SipVersion()
-}
-func (tx *transaction) CallId() (*base.CallId, error) {
-	return tx.origin.CallId()
-}
-func (tx *transaction) Via() (*base.ViaHeader, error) {
-	return tx.origin.Via()
-}
-func (tx *transaction) Branch() (base.MaybeString, error) {
-	return tx.origin.Branch()
-}
-func (tx *transaction) From() (*base.FromHeader, error) {
-	return tx.origin.From()
-}
-func (tx *transaction) To() (*base.ToHeader, error) {
-	return tx.origin.To()
-}
-func (tx *transaction) CSeq() (*base.CSeq, error) {
-	return tx.origin.CSeq()
 }
 
 func (tx *ServerTransaction) Delete() {
@@ -250,22 +217,64 @@ func (tx *ClientTransaction) Errors() <-chan error {
 	return (<-chan error)(tx.tu_err)
 }
 
-// Key returns transaction key - RFC 17.2.3.
-func (tx *ServerTransaction) Key() (txKey, error) {
-	var key txKey
+type txId []interface{}
 
-	if branch, err := tx.Branch(); err == nil {
-		if branchStr, ok := branch.(base.String); ok && branchStr.String() != "" &&
-			strings.HasPrefix(branchStr.String(), RFC3261MagicCookie) &&
-			strings.TrimPrefix(branchStr.String(), RFC3261MagicCookie) != "" {
-			via, err := tx.Via()
-			if err != nil {
-				return nil, fmt.Errorf("can't form transaction key: %s", err)
-			}
+// MakeId returns transaction key - RFC 17.2.3.
+func MakeId(msg base.SipMessage) (txId, error) {
+	firstViaHop, err := msg.ViaHop()
+	if err != nil {
+		return nil, fmt.Errorf("couldn't create transaction id: %s", err)
+	}
 
-			hop := (*via)[0]
-
-			return txKey{branchStr.String(), fmt.Sprintf("%v:%v", hop.Host, hop.Port), tx.Origin().Method}, nil
+	switch msg := msg.(type) {
+	case *base.Request:
+		method := msg.Method
+		if method == base.ACK {
+			method = base.INVITE
 		}
+
+		if branch, err := msg.Branch(); err == nil {
+			if branchStr, ok := branch.(base.String); ok && branchStr.String() != "" &&
+				strings.HasPrefix(branchStr.String(), RFC3261MagicCookie) &&
+				strings.TrimPrefix(branchStr.String(), RFC3261MagicCookie) != "" {
+				// RFC3261 compliant
+				return txId{
+					branch,
+					firstViaHop,
+					method,
+				}, nil
+			}
+		}
+		// RFC 2543 compliant
+		fromTag, err := msg.FromTag()
+		if err != nil {
+			return nil, fmt.Errorf("couldn't create transaction id: %s", err)
+		}
+		toTag, err := msg.ToTag()
+		if err != nil {
+			return nil, fmt.Errorf("couldn't create transaction id: %s", err)
+		}
+		callId, err := msg.CallId()
+		if err != nil {
+			return nil, fmt.Errorf("couldn't create transaction id: %s", err)
+		}
+		cseq, err := msg.CSeq()
+		if err != nil {
+			return nil, fmt.Errorf("couldn't create transaction id: %s", err)
+		}
+
+		return txId{
+			msg.Recipient.String(),
+			toTag,
+			fromTag,
+			callId,
+			firstViaHop,
+			method,
+			cseq.SeqNo,
+		}, nil
+	case *base.Response:
+		// todo
+	default:
+		return nil, fmt.Errorf("unsupported message type")
 	}
 }

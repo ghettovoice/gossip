@@ -423,11 +423,11 @@ func (to *ToHeader) String() string {
 	return buffer.String()
 }
 
-func (h *ToHeader) Name() string { return "To" }
+func (to *ToHeader) Name() string { return "To" }
 
 // Copy the header.
-func (h *ToHeader) Copy() SipHeader {
-	return &ToHeader{h.DisplayName, h.Address.Copy(), h.Params.Copy()}
+func (to *ToHeader) Copy() SipHeader {
+	return &ToHeader{to.DisplayName, to.Address.Copy(), to.Params.Copy()}
 }
 
 type FromHeader struct {
@@ -458,11 +458,11 @@ func (from *FromHeader) String() string {
 	return buffer.String()
 }
 
-func (h *FromHeader) Name() string { return "From" }
+func (from *FromHeader) Name() string { return "From" }
 
 // Copy the header.
-func (h *FromHeader) Copy() SipHeader {
-	return &FromHeader{h.DisplayName, h.Address.Copy(), h.Params.Copy()}
+func (from *FromHeader) Copy() SipHeader {
+	return &FromHeader{from.DisplayName, from.Address.Copy(), from.Params.Copy()}
 }
 
 type ContactHeader struct {
@@ -500,11 +500,11 @@ func (contact *ContactHeader) String() string {
 	return buffer.String()
 }
 
-func (h *ContactHeader) Name() string { return "Contact" }
+func (contact *ContactHeader) Name() string { return "Contact" }
 
 // Copy the header.
-func (h *ContactHeader) Copy() SipHeader {
-	return &ContactHeader{h.DisplayName, h.Address.Copy().(ContactUri), h.Params.Copy()}
+func (contact *ContactHeader) Copy() SipHeader {
+	return &ContactHeader{contact.DisplayName, contact.Address.Copy().(ContactUri), contact.Params.Copy()}
 }
 
 type CallId string
@@ -513,10 +513,10 @@ func (callId CallId) String() string {
 	return "Call-Id: " + (string)(callId)
 }
 
-func (h *CallId) Name() string { return "Call-Id" }
+func (callId *CallId) Name() string { return "Call-Id" }
 
-func (h *CallId) Copy() SipHeader {
-	temp := *h
+func (callId *CallId) Copy() SipHeader {
+	temp := *callId
 	return &temp
 }
 

@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"strings"
 
-	"errors"
 	"github.com/ghettovoice/gossip/log"
 )
 
@@ -74,9 +73,14 @@ type SipMessage interface {
 	StartLine() string
 	// Helper getters
 	CallId() (*CallId, error)
+	Via() (*ViaHeader, error)
+	// ViaHop returns first hop from the first Via header.
+	ViaHop() (*ViaHop, error)
 	Branch() (MaybeString, error)
 	From() (*FromHeader, error)
+	FromTag() (MaybeString, error)
 	To() (*ToHeader, error)
+	ToTag() (MaybeString, error)
 	CSeq() (*CSeq, error)
 }
 
@@ -181,11 +185,11 @@ func (hs *headers) AllHeaders() []SipHeader {
 func (hs *headers) CallId() (*CallId, error) {
 	hdrs := hs.Headers("Call-Id")
 	if len(hdrs) == 0 {
-		return nil, errors.New("'Call-Id' header not found")
+		return nil, fmt.Errorf("'Call-Id' header not found")
 	}
 	callId, ok := hdrs[0].(*CallId)
 	if !ok {
-		return nil, errors.New("Headers('Call-Id') returned non 'Call-Id' header")
+		return nil, fmt.Errorf("Headers('Call-Id') returned non 'Call-Id' header")
 	}
 	return callId, nil
 }
@@ -193,13 +197,24 @@ func (hs *headers) CallId() (*CallId, error) {
 func (hs *headers) Via() (*ViaHeader, error) {
 	hdrs := hs.Headers("Via")
 	if len(hdrs) == 0 {
-		return nil, errors.New("'Via' header not found")
+		return nil, fmt.Errorf("'Via' header not found")
 	}
 	via, ok := hdrs[0].(*ViaHeader)
 	if !ok {
-		return nil, errors.New("Headers('Via') returned non 'Via' header")
+		return nil, fmt.Errorf("Headers('Via') returned non 'Via' header")
 	}
 	return via, nil
+}
+
+func (hs *headers) ViaHop() (*ViaHop, error) {
+	via, err := hs.Via()
+	if err != nil {
+		return nil, err
+	}
+	if len(*via) == 0 {
+		return nil, fmt.Errorf("no hops found in the first 'Via' header")
+	}
+	return (*via)[0], nil
 }
 
 func (hs *headers) Branch() (MaybeString, error) {
@@ -209,44 +224,67 @@ func (hs *headers) Branch() (MaybeString, error) {
 	}
 	branch, ok := (*via)[0].Params.Get("branch")
 	if !ok {
-		return nil, errors.New("no branch parameter on top Via header")
+		return nil, fmt.Errorf("no 'branch' parameter on top 'Via' header")
 	}
-
 	return branch, nil
 }
 
 func (hs *headers) From() (*FromHeader, error) {
 	hdrs := hs.Headers("From")
 	if len(hdrs) == 0 {
-		return nil, errors.New("'From' header not found")
+		return nil, fmt.Errorf("'From' header not found")
 	}
 	from, ok := hdrs[0].(*FromHeader)
 	if !ok {
-		return nil, errors.New("Headers('From') returned non 'From' header")
+		return nil, fmt.Errorf("Headers('From') returned non 'From' header")
 	}
 	return from, nil
+}
+
+func (hs *headers) FromTag() (MaybeString, error) {
+	from, err := hs.From()
+	if err != nil {
+		return nil, err
+	}
+	tag, ok := from.Params.Get("tag")
+	if !ok {
+		return nil, fmt.Errorf("no 'tag' parameter on 'From' header")
+	}
+	return tag, nil
 }
 
 func (hs *headers) To() (*ToHeader, error) {
 	hdrs := hs.Headers("To")
 	if len(hdrs) == 0 {
-		return nil, errors.New("'To' header not found")
+		return nil, fmt.Errorf("'To' header not found")
 	}
 	to, ok := hdrs[0].(*ToHeader)
 	if !ok {
-		return nil, errors.New("Headers('To') returned non 'To' header")
+		return nil, fmt.Errorf("Headers('To') returned non 'To' header")
 	}
 	return to, nil
+}
+
+func (hs *headers) ToTag() (MaybeString, error) {
+	to, err := hs.To()
+	if err != nil {
+		return nil, err
+	}
+	tag, ok := to.Params.Get("tag")
+	if !ok {
+		return nil, fmt.Errorf("no 'tag' parameter on 'To' header")
+	}
+	return tag, nil
 }
 
 func (hs *headers) CSeq() (*CSeq, error) {
 	hdrs := hs.Headers("CSeq")
 	if len(hdrs) == 0 {
-		return nil, errors.New("'CSeq' header not found")
+		return nil, fmt.Errorf("'CSeq' header not found")
 	}
 	cseq, ok := hdrs[0].(*CSeq)
 	if !ok {
-		return nil, errors.New("Headers('CSeq') returned non 'CSeq' header")
+		return nil, fmt.Errorf("Headers('CSeq') returned non 'CSeq' header")
 	}
 	return cseq, nil
 }
@@ -323,7 +361,7 @@ func (msg *message) logFields() map[string]interface{} {
 	fields := make(map[string]interface{})
 	// add cseq
 	if cseq, err := msg.CSeq(); err == nil {
-		fields["cseq"] = fmt.Sprintf("%d %s", cseq.SeqNo, cseq.MethodName)
+		fields["cseq"] = cseq
 	}
 	// add Call-Id
 	if callId, err := msg.CallId(); err == nil {
@@ -335,23 +373,11 @@ func (msg *message) logFields() map[string]interface{} {
 	}
 	// add From
 	if from, err := msg.From(); err == nil {
-		var buf bytes.Buffer
-		if name, ok := from.DisplayName.(*String); ok {
-			buf.WriteString(fmt.Sprintf("%s ", name))
-		}
-		buf.WriteString(fmt.Sprintf("%s", from.Address))
-
-		fields["from"] = buf
+		fields["from"] = from
 	}
 	// add To
 	if to, err := msg.To(); err == nil {
-		var buf bytes.Buffer
-		if name, ok := to.DisplayName.(*String); ok {
-			buf.WriteString(fmt.Sprintf("%s ", name))
-		}
-		buf.WriteString(fmt.Sprintf("%s", to.Address))
-
-		fields["from"] = buf
+		fields["to"] = to
 	}
 
 	return fields
