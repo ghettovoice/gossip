@@ -182,7 +182,7 @@ func (mng *Manager) request(req *base.Request) {
 }
 
 func (mng *Manager) sendPresumptiveTrying(tx *ServerTransaction) {
-	tx.Log().Infof("sending '100 Trying' auto response on trnasaction %p", tx)
+	tx.Log().Infof("sending '100 Trying' auto response on transaction %p", tx)
 	// Pretend the user sent us a 100 to send.
 	trying := base.NewResponse(
 		"SIP/2.0",

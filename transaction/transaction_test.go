@@ -11,6 +11,7 @@ import (
 	"github.com/ghettovoice/gossip/parser"
 	"github.com/ghettovoice/gossip/timing"
 	"github.com/ghettovoice/gossip/transport"
+	"github.com/ghettovoice/gossip/utils"
 )
 
 // UTs for transaction layer.
@@ -62,22 +63,22 @@ type transactionTest struct {
 	actions   []action
 	tm        *Manager
 	transport *dummyTransport
-	lastTx    *ClientTransaction
+	lastTx    Transaction
 }
 
 func (test *transactionTest) Execute() {
 	var err error
 	timing.MockMode = true
 	log.SetDefaultLogLevel(log.DEBUG)
-	transport := newDummyTransport()
-	test.tm, err = NewManager(transport, c_CLIENT)
+	tp := newDummyTransport()
+	test.tm, err = NewManager(tp, c_CLIENT)
 	assertNoError(test.t, err)
 	defer test.tm.Stop()
 
-	test.transport = transport
+	test.transport = tp
 
 	for _, actn := range test.actions {
-		test.t.Logf("Performing action %v", actn)
+		test.t.Logf("performing action %v", actn)
 		assertNoError(test.t, actn.Act(test))
 	}
 }
@@ -103,11 +104,11 @@ func (actn *transportSend) Act(test *transactionTest) error {
 }
 
 type userRecv struct {
-	expected *base.Response
+	expected base.SipMessage
 }
 
 func (actn *userRecv) Act(test *transactionTest) error {
-	responses := test.lastTx.Responses()
+	responses := test.lastTx.(*ClientTransaction).Responses()
 	select {
 	case response, ok := <-responses:
 		if !ok {
@@ -166,7 +167,7 @@ func assertNoError(t *testing.T, err error) {
 }
 
 func message(rawMsg []string) (base.SipMessage, error) {
-	return parser.ParseMessage([]byte(strings.Join(rawMsg, "\r\n")), log.StandardLogger())
+	return parser.ParseMessage([]byte(strings.Join(rawMsg, "\r\n")), log.WithField("msg", utils.RandStr(4, "msg-")))
 }
 
 func request(rawMsg []string) (*base.Request, error) {
