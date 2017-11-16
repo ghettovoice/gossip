@@ -16,7 +16,10 @@ type Udp struct {
 }
 
 func NewUdp(output chan base.SipMessage) (*Udp, error) {
-	newUdp := Udp{listeningPoints: make([]*net.UDPConn, 0), output: output}
+	newUdp := Udp{
+		listeningPoints: make([]*net.UDPConn, 0),
+		output:          output,
+	}
 	return &newUdp, nil
 }
 
@@ -27,16 +30,22 @@ func (udp *Udp) Listen(address string) error {
 	}
 
 	lp, err := net.ListenUDP("udp", addr)
-
-	if err == nil {
-		udp.listeningPoints = append(udp.listeningPoints, lp)
-		go udp.listen(lp)
+	if err != nil {
+		return err
 	}
 
+	udp.listeningPoints = append(udp.listeningPoints, lp)
+	go udp.listen(lp)
+
+	// At this point, err should be nil but let's be defensive.
 	return err
 }
 
 func (udp *Udp) IsStreamed() bool {
+	return false
+}
+
+func (udp *Udp) IsReliable() bool {
 	return false
 }
 
@@ -61,12 +70,13 @@ func (udp *Udp) Send(addr string, msg base.SipMessage) error {
 	return err
 }
 
+// todo RFC 18.2.1
 func (udp *Udp) listen(conn *net.UDPConn) {
 	log.Infof("begin listening for UDP on address %s", conn.LocalAddr())
 
 	buffer := make([]byte, c_BUFSIZE)
 	iter := func(conn *net.UDPConn, buffer []byte) bool {
-		logger := log.WithField("packet-tag", utils.RandStr(4, "pkt-"))
+		logger := log.WithField("pkt-tag", utils.RandStr(4, "pkt-"))
 		// eat bytes
 		num, _, err := conn.ReadFromUDP(buffer)
 		if err != nil {

@@ -28,6 +28,7 @@ type manager struct {
 
 type transport interface {
 	IsStreamed() bool
+	IsReliable() bool
 	Listen(address string) error
 	Send(addr string, message base.SipMessage) error
 	Stop()

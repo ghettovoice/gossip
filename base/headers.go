@@ -13,8 +13,9 @@ import (
 // Whitespace recognised by SIP protocol.
 const c_ABNF_WS = " \t"
 
-// Maybestring contains a string, or nil.
+// MaybeString contains a string, or nil.
 type MaybeString interface {
+	fmt.Stringer
 	implementsMaybeString()
 }
 

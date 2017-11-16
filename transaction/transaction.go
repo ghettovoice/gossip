@@ -2,11 +2,8 @@ package transaction
 
 import (
 	"errors"
-	"time"
-
 	"fmt"
-
-	"strings"
+	"time"
 
 	"github.com/discoviking/fsm"
 	"github.com/ghettovoice/gossip/base"
@@ -14,8 +11,6 @@ import (
 	"github.com/ghettovoice/gossip/timing"
 	"github.com/ghettovoice/gossip/transport"
 )
-
-const RFC3261MagicCookie = "z9hG4bK"
 
 const (
 	T1 = 500 * time.Millisecond
@@ -215,66 +210,4 @@ func (tx *ClientTransaction) Responses() <-chan *base.Response {
 // Return the channel we send errors on.
 func (tx *ClientTransaction) Errors() <-chan error {
 	return (<-chan error)(tx.tu_err)
-}
-
-type txId []interface{}
-
-// MakeId returns transaction key - RFC 17.2.3.
-func MakeId(msg base.SipMessage) (txId, error) {
-	firstViaHop, err := msg.ViaHop()
-	if err != nil {
-		return nil, fmt.Errorf("couldn't create transaction id: %s", err)
-	}
-
-	switch msg := msg.(type) {
-	case *base.Request:
-		method := msg.Method
-		if method == base.ACK {
-			method = base.INVITE
-		}
-
-		if branch, err := msg.Branch(); err == nil {
-			if branchStr, ok := branch.(base.String); ok && branchStr.String() != "" &&
-				strings.HasPrefix(branchStr.String(), RFC3261MagicCookie) &&
-				strings.TrimPrefix(branchStr.String(), RFC3261MagicCookie) != "" {
-				// RFC3261 compliant
-				return txId{
-					branch,
-					firstViaHop,
-					method,
-				}, nil
-			}
-		}
-		// RFC 2543 compliant
-		fromTag, err := msg.FromTag()
-		if err != nil {
-			return nil, fmt.Errorf("couldn't create transaction id: %s", err)
-		}
-		toTag, err := msg.ToTag()
-		if err != nil {
-			return nil, fmt.Errorf("couldn't create transaction id: %s", err)
-		}
-		callId, err := msg.CallId()
-		if err != nil {
-			return nil, fmt.Errorf("couldn't create transaction id: %s", err)
-		}
-		cseq, err := msg.CSeq()
-		if err != nil {
-			return nil, fmt.Errorf("couldn't create transaction id: %s", err)
-		}
-
-		return txId{
-			msg.Recipient.String(),
-			toTag,
-			fromTag,
-			callId,
-			firstViaHop,
-			method,
-			cseq.SeqNo,
-		}, nil
-	case *base.Response:
-		// todo
-	default:
-		return nil, fmt.Errorf("unsupported message type")
-	}
 }

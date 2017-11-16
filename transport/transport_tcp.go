@@ -47,6 +47,10 @@ func (tcp *Tcp) IsStreamed() bool {
 	return true
 }
 
+func (tcp *Tcp) IsReliable() bool {
+	return true
+}
+
 func (tcp *Tcp) getConnection(addr string) (*connection, error) {
 	conn := tcp.connTable.GetConn(addr)
 
@@ -94,7 +98,7 @@ func (tcp *Tcp) serve(listeningPoint *net.TCPListener) {
 		baseConn, err := listeningPoint.Accept()
 		if err != nil {
 			logger.Errorf(
-				"failed to accept TCP conn on address %s; %s",
+				"failed to accept TCP conn on address %s: %s",
 				listeningPoint.Addr().String(),
 				err.Error(),
 			)
