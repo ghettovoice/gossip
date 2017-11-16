@@ -6,7 +6,6 @@ import (
 	"github.com/ghettovoice/gossip/base"
 	"github.com/ghettovoice/gossip/log"
 	"github.com/ghettovoice/gossip/parser"
-	"github.com/ghettovoice/gossip/utils"
 )
 
 type Udp struct {
@@ -76,24 +75,23 @@ func (udp *Udp) listen(conn *net.UDPConn) {
 
 	buffer := make([]byte, c_BUFSIZE)
 	iter := func(conn *net.UDPConn, buffer []byte) bool {
-		logger := log.WithField("conn-tag", utils.RandStr(4, "conn-"))
 		// eat bytes
-		num, _, err := conn.ReadFromUDP(buffer)
+		num, addr, err := conn.ReadFromUDP(buffer)
 		if err != nil {
 			if udp.stop {
-				log.Infof("stopped listening for UDP on %s", conn.LocalAddr)
+				log.Infof("stopped listening for UDP on %s", conn.LocalAddr())
 				return false
 			} else {
-				logger.Errorf("failed to read from UDP buffer: %s", err.Error())
+				log.Errorf("failed to read from UDP buffer: %s", err)
 				return true
 			}
 		}
-
+		logger := log.WithField("conn-tag", addr)
 		pkt := append([]byte(nil), buffer[:num]...)
 		go func() {
 			msg, err := parser.ParseMessage(pkt, logger)
 			if err != nil {
-				logger.Warnf("failed to parse SIP message: %s", err.Error())
+				logger.Warnf("failed to parse SIP message: %s", err)
 			} else {
 				udp.output <- msg
 			}

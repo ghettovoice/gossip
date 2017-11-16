@@ -11,7 +11,6 @@ import (
 	"github.com/ghettovoice/gossip/parser"
 	"github.com/ghettovoice/gossip/timing"
 	"github.com/ghettovoice/gossip/transport"
-	"github.com/ghettovoice/gossip/utils"
 )
 
 // UTs for transaction layer.
@@ -63,7 +62,8 @@ type transactionTest struct {
 	actions   []action
 	tm        *Manager
 	transport *dummyTransport
-	lastTx    Transaction
+	lastTx    *ClientTransaction
+	log       log.Logger
 }
 
 func (test *transactionTest) Execute() {
@@ -108,19 +108,40 @@ type userRecv struct {
 }
 
 func (actn *userRecv) Act(test *transactionTest) error {
-	responses := test.lastTx.(*ClientTransaction).Responses()
+	// check responses on Client transaction
 	select {
-	case response, ok := <-responses:
+	case response, ok := <-test.lastTx.Responses():
 		if !ok {
 			return fmt.Errorf("response channel prematurely closed")
 		} else if response.String() != actn.expected.String() {
 			return fmt.Errorf("Unexpected response:\n%s", response.String())
 		} else {
-			test.t.Logf("transaction User received correct message\n%v", response.String())
+			test.t.Logf("transaction User received correct response\n%v", response.String())
 			return nil
 		}
 	case <-time.After(time.Second):
 		return fmt.Errorf("timed out waiting for response")
+	}
+}
+
+type userRecvSrv struct {
+	expected base.SipMessage
+}
+
+func (actn *userRecvSrv) Act(test *transactionTest) error {
+	// check requests on transaction manager
+	select {
+	case tx, ok := <-test.tm.Requests():
+		if !ok {
+			return fmt.Errorf("requests channel prematurely closed")
+		} else if tx.Origin().String() != actn.expected.String() {
+			return fmt.Errorf("Unexpected request:\n%s", tx.Origin().String())
+		} else {
+			test.t.Logf("transaction User received correct request\n%v", tx.Origin().String())
+			return nil
+		}
+	case <-time.After(time.Second):
+		return fmt.Errorf("timed out waiting for request")
 	}
 }
 
@@ -166,12 +187,12 @@ func assertNoError(t *testing.T, err error) {
 	}
 }
 
-func message(rawMsg []string) (base.SipMessage, error) {
-	return parser.ParseMessage([]byte(strings.Join(rawMsg, "\r\n")), log.WithField("msg", utils.RandStr(4, "msg-")))
+func message(rawMsg []string, logger log.Logger) (base.SipMessage, error) {
+	return parser.ParseMessage([]byte(strings.Join(rawMsg, "\r\n")), logger)
 }
 
-func request(rawMsg []string) (*base.Request, error) {
-	msg, err := message(rawMsg)
+func request(rawMsg []string, logger log.Logger) (*base.Request, error) {
+	msg, err := message(rawMsg, logger)
 
 	if err != nil {
 		return nil, err
@@ -185,8 +206,8 @@ func request(rawMsg []string) (*base.Request, error) {
 	}
 }
 
-func response(rawMsg []string) (*base.Response, error) {
-	msg, err := message(rawMsg)
+func response(rawMsg []string, logger log.Logger) (*base.Response, error) {
+	msg, err := message(rawMsg, logger)
 
 	if err != nil {
 		return nil, err

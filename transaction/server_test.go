@@ -3,19 +3,22 @@ package transaction
 import (
 	"testing"
 	"time"
+
+	"github.com/ghettovoice/gossip/log"
 )
 
 func TestResendInviteOK(t *testing.T) {
 }
 
-func TestReceiveInvite(t *testing.T) {
+func TestServerReceiveInvite(t *testing.T) {
+	logger := log.WithField("test", t.Name())
 	invite, err := request([]string{
-		"INVITE sip:joe@bloggs.com SIP/2.0",
+		"INVITE sip:bob@example.com SIP/2.0",
 		"Via: SIP/2.0/UDP " + c_CLIENT + ";branch=z9hG4bK776asdhds",
 		"CSeq: 1 INVITE",
 		"",
 		"",
-	})
+	}, logger)
 	assertNoError(t, err)
 
 	trying, err := response([]string{
@@ -24,7 +27,7 @@ func TestReceiveInvite(t *testing.T) {
 		"CSeq: 1 INVITE",
 		"",
 		"",
-	})
+	}, logger)
 	assertNoError(t, err)
 
 	ok, err := response([]string{
@@ -33,28 +36,36 @@ func TestReceiveInvite(t *testing.T) {
 		"Via: SIP/2.0/UDP " + c_CLIENT + ";branch=z9hG4bK776asdhds",
 		"",
 		"",
-	})
+	}, logger)
 	assertNoError(t, err)
 
 	ack, err := request([]string{
-		"ACK sip:joe@bloggs.com SIP/2.0",
+		"ACK sip:bob@example.com SIP/2.0",
 		"Via: SIP/2.0/UDP " + c_CLIENT + ";branch=z9hG4bKagjbewssw",
 		"CSeq: 1 ACK",
 		"",
 		"",
-	})
+	}, logger)
 	assertNoError(t, err)
 
-	test := transactionTest{t: t,
+	test := transactionTest{
+		t:   t,
+		log: logger,
 		actions: []action{
-			&transportSend{invite}, // client sends INVITE
-			&transportRecv{trying}, // server sends 100 trying
+			&userSend{invite},
+			&transportRecv{invite},
+			&transportSend{invite},
+			&userRecvSrv{invite},
+			&transportRecv{trying},
 			&wait{time.Second},
-			&transportSend{ok}, // server sends 200 OK
-			&transportRecv{ok}, // client gets 100 trying
+			&transportSend{ok},
+			&userRecv{ok},
 			&wait{time.Second},
-			&transportSend{ack}, // client sends ACK
-			&transportRecv{ack}, // server gets ACK
+			&userSend{ack},
+			&transportSend{ack},
+			&userRecvSrv{ack},
 		}}
 	test.Execute()
 }
+
+// todo test non-2xx response on INVITE

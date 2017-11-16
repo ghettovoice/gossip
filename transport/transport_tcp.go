@@ -6,7 +6,6 @@ import (
 	"github.com/ghettovoice/gossip/base"
 	"github.com/ghettovoice/gossip/log"
 	"github.com/ghettovoice/gossip/parser"
-	"github.com/ghettovoice/gossip/utils"
 )
 
 type Tcp struct {
@@ -55,9 +54,7 @@ func (tcp *Tcp) getConnection(addr string) (*connection, error) {
 	conn := tcp.connTable.GetConn(addr)
 
 	if conn == nil {
-		logger := log.WithField("conn-tag", utils.RandStr(4, "conn-"))
-
-		logger.Debugf("no stored connection for address %s; generate a new one", addr)
+		log.Debugf("no stored connection for address %s; generate a new one", addr)
 		raddr, err := net.ResolveTCPAddr("tcp", addr)
 		if err != nil {
 			return nil, err
@@ -67,7 +64,7 @@ func (tcp *Tcp) getConnection(addr string) (*connection, error) {
 		if err != nil {
 			return nil, err
 		}
-
+		logger := log.WithField("conn-tag", raddr)
 		conn = NewConn(baseConn, tcp.output, logger)
 	} else {
 		conn = tcp.connTable.GetConn(addr)
@@ -82,6 +79,7 @@ func (tcp *Tcp) Send(addr string, msg base.SipMessage) error {
 	msg.Log().Debugf("sending message:\r\n%v", msg.String())
 
 	conn, err := tcp.getConnection(addr)
+	conn.log = msg.Log()
 	if err != nil {
 		return err
 	}
@@ -94,10 +92,9 @@ func (tcp *Tcp) serve(listeningPoint *net.TCPListener) {
 	log.Infof("begin serving TCP on address %s", listeningPoint.Addr().String())
 
 	iter := func(listeningPoint *net.TCPListener) bool {
-		logger := log.WithField("conn-tag", utils.RandStr(4, "conn-"))
 		baseConn, err := listeningPoint.Accept()
 		if err != nil {
-			logger.Errorf(
+			log.Errorf(
 				"failed to accept TCP conn on address %s: %s",
 				listeningPoint.Addr().String(),
 				err.Error(),
@@ -105,6 +102,7 @@ func (tcp *Tcp) serve(listeningPoint *net.TCPListener) {
 			return true
 		}
 
+		logger := log.WithField("conn-tag", baseConn.RemoteAddr())
 		conn := NewConn(baseConn, tcp.output, logger)
 		logger.Debugf(
 			"accepted new TCP conn %p from %s on address %s",

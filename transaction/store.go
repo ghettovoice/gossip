@@ -139,11 +139,13 @@ func (store *store) delTx(key txKey) {
 
 // RFC 17.1.3.
 func (store *store) getClientTx(res *base.Response) (*ClientTransaction, error) {
+	res.Log().Debugf("trying to get client transaction key from response %s", res.Short())
 	key, err := makeClientTxKey(res)
 	if err != nil {
 		return nil, fmt.Errorf("failed to match response %s to client transaction: %s", res.Short(), err)
 	}
 
+	res.Log().Debugf("trying to match response %s to client transaction by key %s", res.Short(), key)
 	tx, ok := store.getTx(key)
 	if !ok {
 		return nil, fmt.Errorf(
@@ -166,33 +168,40 @@ func (store *store) getClientTx(res *base.Response) (*ClientTransaction, error) 
 }
 
 func (store *store) putClientTx(tx *ClientTransaction) error {
+	tx.Log().Debugf("trying to get key of client transaction %p", tx)
 	key, err := makeClientTxKey(tx.Origin())
 	if err != nil {
 		return fmt.Errorf("failed to put client transaction %p: %s", tx, err)
 	}
 
+	tx.Log().Debugf("trying to store client transaction %p with key %s", tx, key)
 	store.putTx(key, tx)
 
 	return nil
 }
 
 func (store *store) delClientTx(tx *ClientTransaction) error {
+	tx.Log().Debugf("trying to get key of client transaction %p", tx)
 	key, err := makeClientTxKey(tx.Origin())
 	if err != nil {
 		return fmt.Errorf("failed to delete client transaction %p: %s", tx, err)
 	}
 
+	tx.Log().Debugf("trying to delete client transaction %p by key %v", tx, key)
 	store.delTx(key)
+
 	return nil
 }
 
 // RFC 17.2.3.
 func (store *store) getServerTx(req *base.Request) (*ServerTransaction, error) {
+	req.Log().Debugf("trying to get server transaction key from request %s", req.Short())
 	key, err := makeServerTxKey(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to match request %s to server transaction: %s", req.Short(), err)
 	}
 
+	req.Log().Debugf("trying to match request %s to server transaction by key %s", req.Short(), key)
 	tx, ok := store.getTx(key)
 	if !ok {
 		return nil, fmt.Errorf(
@@ -215,22 +224,27 @@ func (store *store) getServerTx(req *base.Request) (*ServerTransaction, error) {
 }
 
 func (store *store) putServerTx(tx *ServerTransaction) error {
+	tx.Log().Debugf("trying to get key of server transaction %p", tx)
 	key, err := makeServerTxKey(tx.Origin())
 	if err != nil {
 		return fmt.Errorf("failed to put server transaction %p: %s", tx, err)
 	}
 
+	tx.Log().Debugf("trying to store server transaction %p with key %s", tx, key)
 	store.putTx(key, tx)
 
 	return nil
 }
 
 func (store *store) delServerTx(tx *ServerTransaction) error {
+	tx.Log().Debugf("trying to get key of server transaction %p", tx)
 	key, err := makeServerTxKey(tx.Origin())
 	if err != nil {
 		return fmt.Errorf("failed to delete server transaction %p: %s", tx, err)
 	}
 
+	tx.Log().Debugf("trying to delete server transaction %p by key %v", tx, key)
 	store.delTx(key)
+
 	return nil
 }
