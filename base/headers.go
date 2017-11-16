@@ -1,20 +1,21 @@
 package base
 
 import (
-	"github.com/stefankopieczek/gossip/log"
-	"github.com/stefankopieczek/gossip/utils"
-)
+	"bytes"
+	"fmt"
+	"strconv"
+	"strings"
 
-import "bytes"
-import "fmt"
-import "strconv"
-import "strings"
+	"github.com/ghettovoice/gossip/log"
+	"github.com/ghettovoice/gossip/utils"
+)
 
 // Whitespace recognised by SIP protocol.
 const c_ABNF_WS = " \t"
 
-// Maybestring contains a string, or nil.
+// MaybeString contains a string, or nil.
 type MaybeString interface {
+	fmt.Stringer
 	implementsMaybeString()
 }
 
@@ -22,6 +23,10 @@ type MaybeString interface {
 type NoString struct{}
 
 func (n NoString) implementsMaybeString() {}
+
+func (s NoString) String() string {
+	return ""
+}
 
 // String represents an actual string.
 type String struct {
@@ -105,7 +110,7 @@ type SipUri struct {
 }
 
 func copyWithNil(params Params) Params {
-	if (params == nil) {
+	if params == nil {
 		return NewParams()
 	}
 	return params.Copy()
@@ -299,7 +304,7 @@ func (p *params) Copy() Params {
 		if v, ok := p.Get(k); ok {
 			dup.Add(k, v)
 		} else {
-			log.Severe("Internal consistency error. Key %v present in param.Keys() but failed to Get()!", k)
+			log.Errorf("internal consistency error: key %v present in param.Keys() but failed to Get()", k)
 		}
 	}
 
@@ -315,7 +320,7 @@ func (p *params) ToString(sep uint8) string {
 	for _, k := range p.Keys() {
 		v, ok := p.Get(k)
 		if !ok {
-			log.Severe("Internal consistency error. Key %v present in param.Keys() but failed to Get()!", k)
+			log.Errorf("internal consistency error: key %v present in param.Keys() but failed to Get()", k)
 			continue
 		}
 
@@ -423,11 +428,11 @@ func (to *ToHeader) String() string {
 	return buffer.String()
 }
 
-func (h *ToHeader) Name() string { return "To" }
+func (to *ToHeader) Name() string { return "To" }
 
 // Copy the header.
-func (h *ToHeader) Copy() SipHeader {
-	return &ToHeader{h.DisplayName, h.Address.Copy(), h.Params.Copy()}
+func (to *ToHeader) Copy() SipHeader {
+	return &ToHeader{to.DisplayName, to.Address.Copy(), to.Params.Copy()}
 }
 
 type FromHeader struct {
@@ -458,11 +463,11 @@ func (from *FromHeader) String() string {
 	return buffer.String()
 }
 
-func (h *FromHeader) Name() string { return "From" }
+func (from *FromHeader) Name() string { return "From" }
 
 // Copy the header.
-func (h *FromHeader) Copy() SipHeader {
-	return &FromHeader{h.DisplayName, h.Address.Copy(), h.Params.Copy()}
+func (from *FromHeader) Copy() SipHeader {
+	return &FromHeader{from.DisplayName, from.Address.Copy(), from.Params.Copy()}
 }
 
 type ContactHeader struct {
@@ -500,11 +505,11 @@ func (contact *ContactHeader) String() string {
 	return buffer.String()
 }
 
-func (h *ContactHeader) Name() string { return "Contact" }
+func (contact *ContactHeader) Name() string { return "Contact" }
 
 // Copy the header.
-func (h *ContactHeader) Copy() SipHeader {
-	return &ContactHeader{h.DisplayName, h.Address.Copy().(ContactUri), h.Params.Copy()}
+func (contact *ContactHeader) Copy() SipHeader {
+	return &ContactHeader{contact.DisplayName, contact.Address.Copy().(ContactUri), contact.Params.Copy()}
 }
 
 type CallId string
@@ -513,10 +518,10 @@ func (callId CallId) String() string {
 	return "Call-Id: " + (string)(callId)
 }
 
-func (h *CallId) Name() string { return "Call-Id" }
+func (callId *CallId) Name() string { return "Call-Id" }
 
-func (h *CallId) Copy() SipHeader {
-	temp := *h
+func (callId *CallId) Copy() SipHeader {
+	temp := *callId
 	return &temp
 }
 

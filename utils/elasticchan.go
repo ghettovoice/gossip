@@ -1,6 +1,6 @@
 package utils
 
-import "github.com/stefankopieczek/gossip/log"
+import "github.com/ghettovoice/gossip/log"
 
 // The buffer size of the primitive input and output chans.
 const c_ELASTIC_CHANSIZE = 3
@@ -13,13 +13,15 @@ type ElasticChan struct {
 	Out     chan interface{}
 	buffer  []interface{}
 	stopped bool
+	log     log.Logger
 }
 
 // Initialise the Elastic channel, and start the management goroutine.
-func (c *ElasticChan) Init() {
+func (c *ElasticChan) Init(logger log.Logger) {
 	c.In = make(chan interface{}, c_ELASTIC_CHANSIZE)
 	c.Out = make(chan interface{}, c_ELASTIC_CHANSIZE)
 	c.buffer = make([]interface{}, 0)
+	c.log = logger
 
 	go c.manage()
 }
@@ -35,13 +37,13 @@ func (c *ElasticChan) manage() {
 			select {
 			case in, ok := <-c.In:
 				if !ok {
-					log.Debug("Chan %p will dispose", c)
+					c.log.Debugf("chan %p will dispose", c)
 					break
 				}
-				log.Debug("Chan %p gets '%v'", c, in)
+				c.log.Debugf("chan %p gets '%v'", c, in)
 				c.buffer = append(c.buffer, in)
 			case c.Out <- c.buffer[0]:
-				log.Debug("Chan %p sends '%v'", c, c.buffer[0])
+				c.log.Debugf("chan %p sends '%v'", c, c.buffer[0])
 				c.buffer = c.buffer[1:]
 			}
 		} else {
@@ -49,10 +51,10 @@ func (c *ElasticChan) manage() {
 			// Just wait to receive.
 			in, ok := <-c.In
 			if !ok {
-				log.Debug("Chan %p will dispose", c)
+				c.log.Debugf("chan %p will dispose", c)
 				break
 			}
-			log.Debug("Chan %p gets '%v'", c, in)
+			c.log.Debugf("chan %p gets '%v'", c, in)
 			c.buffer = append(c.buffer, in)
 		}
 	}
@@ -61,10 +63,10 @@ func (c *ElasticChan) manage() {
 }
 
 func (c *ElasticChan) dispose() {
-	log.Debug("Chan %p disposing...", c)
+	c.log.Debugf("chan %p disposing...", c)
 	for len(c.buffer) > 0 {
 		c.Out <- c.buffer[0]
 		c.buffer = c.buffer[1:]
 	}
-	log.Debug("Chan %p disposed", c)
+	c.log.Debugf("chan %p disposed", c)
 }

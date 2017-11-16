@@ -1,12 +1,12 @@
 package transport
 
 import (
-	"github.com/stefankopieczek/gossip/base"
-	"github.com/stefankopieczek/gossip/log"
-	"github.com/stefankopieczek/gossip/parser"
-)
+	"net"
 
-import "net"
+	"github.com/ghettovoice/gossip/base"
+	"github.com/ghettovoice/gossip/log"
+	"github.com/ghettovoice/gossip/parser"
+)
 
 type Tcp struct {
 	connTable
@@ -46,11 +46,15 @@ func (tcp *Tcp) IsStreamed() bool {
 	return true
 }
 
+func (tcp *Tcp) IsReliable() bool {
+	return true
+}
+
 func (tcp *Tcp) getConnection(addr string) (*connection, error) {
 	conn := tcp.connTable.GetConn(addr)
 
 	if conn == nil {
-		log.Debug("No stored connection for address %s; generate a new one", addr)
+		log.Debugf("no stored connection for address %s; generate a new one", addr)
 		raddr, err := net.ResolveTCPAddr("tcp", addr)
 		if err != nil {
 			return nil, err
@@ -60,8 +64,8 @@ func (tcp *Tcp) getConnection(addr string) (*connection, error) {
 		if err != nil {
 			return nil, err
 		}
-
-		conn = NewConn(baseConn, tcp.output)
+		logger := log.WithField("conn-tag", raddr)
+		conn = NewConn(baseConn, tcp.output, logger)
 	} else {
 		conn = tcp.connTable.GetConn(addr)
 	}
@@ -71,7 +75,11 @@ func (tcp *Tcp) getConnection(addr string) (*connection, error) {
 }
 
 func (tcp *Tcp) Send(addr string, msg base.SipMessage) error {
+	msg.Log().Infof("sending message to %v: %v", addr, msg.Short())
+	msg.Log().Debugf("sending message:\r\n%v", msg.String())
+
 	conn, err := tcp.getConnection(addr)
+	conn.log = msg.Log()
 	if err != nil {
 		return err
 	}
@@ -81,18 +89,35 @@ func (tcp *Tcp) Send(addr string, msg base.SipMessage) error {
 }
 
 func (tcp *Tcp) serve(listeningPoint *net.TCPListener) {
-	log.Info("Begin serving TCP on address " + listeningPoint.Addr().String())
+	log.Infof("begin serving TCP on address %s", listeningPoint.Addr().String())
 
-	for {
+	iter := func(listeningPoint *net.TCPListener) bool {
 		baseConn, err := listeningPoint.Accept()
 		if err != nil {
-			log.Severe("Failed to accept TCP conn on address " + listeningPoint.Addr().String() + "; " + err.Error())
-			continue
+			log.Errorf(
+				"failed to accept TCP conn on address %s: %s",
+				listeningPoint.Addr().String(),
+				err.Error(),
+			)
+			return true
 		}
 
-		conn := NewConn(baseConn, tcp.output)
-		log.Debug("Accepted new TCP conn %p from %s on address %s", &conn, conn.baseConn.RemoteAddr(), conn.baseConn.LocalAddr())
+		logger := log.WithField("conn-tag", baseConn.RemoteAddr())
+		conn := NewConn(baseConn, tcp.output, logger)
+		logger.Debugf(
+			"accepted new TCP conn %p from %s on address %s",
+			&conn,
+			conn.baseConn.RemoteAddr(),
+			conn.baseConn.LocalAddr(),
+		)
 		tcp.connTable.Notify(baseConn.RemoteAddr().String(), conn)
+
+		return true
+	}
+	for {
+		if !iter(listeningPoint) {
+			break
+		}
 	}
 }
 

@@ -6,8 +6,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/stefankopieczek/gossip/base"
-	"github.com/stefankopieczek/gossip/log"
+	"github.com/ghettovoice/gossip/base"
+	"github.com/ghettovoice/gossip/log"
 )
 
 const c_BUFSIZE int = 65507
@@ -28,13 +28,15 @@ type manager struct {
 
 type transport interface {
 	IsStreamed() bool
+	IsReliable() bool
 	Listen(address string) error
 	Send(addr string, message base.SipMessage) error
 	Stop()
 }
 
+// TODO: manage multiple transports: udp, tcp at once.
 func NewManager(transportType string) (m Manager, err error) {
-	err = fmt.Errorf("Unknown transport type '%s'", transportType)
+	err = fmt.Errorf("unknown transport type '%s'", transportType)
 
 	var n notifier
 	n.init()
@@ -86,7 +88,7 @@ func (n *notifier) init() {
 }
 
 func (n *notifier) register(l Listener) {
-	log.Debug("Notifier %p has new listener %p", n, l)
+	log.Debugf("notifier %p has new listener %p", n, l)
 	if n.listeners == nil {
 		n.listeners = make(map[Listener]bool)
 	}
@@ -105,7 +107,7 @@ func (n *notifier) forward() {
 	for msg := range n.inputs {
 		deadListeners := make([]chan base.SipMessage, 0)
 		n.listenerLock.Lock()
-		log.Debug(fmt.Sprintf("Notify %d listeners of message", len(n.listeners)))
+		msg.Log().Debugf("notify %d listeners of message", len(n.listeners))
 		for listener := range n.listeners {
 			sent := listener.notify(msg)
 			if !sent {
@@ -113,7 +115,7 @@ func (n *notifier) forward() {
 			}
 		}
 		for _, deadListener := range deadListeners {
-			log.Debug(fmt.Sprintf("Expiring listener %#v", deadListener))
+			msg.Log().Debugf("expiring listener %#v", deadListener)
 			delete(n.listeners, deadListener)
 		}
 		n.listenerLock.Unlock()

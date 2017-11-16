@@ -3,8 +3,8 @@ package transport
 import (
 	"time"
 
-	"github.com/stefankopieczek/gossip/log"
-	"github.com/stefankopieczek/gossip/timing"
+	"github.com/ghettovoice/gossip/log"
+	"github.com/ghettovoice/gossip/timing"
 )
 
 // Fields of connTable should only be modified by the dedicated goroutine called by Init().
@@ -29,7 +29,7 @@ type connWatcher struct {
 
 // Create a new connection table.
 func (t *connTable) Init() {
-	log.Info("Init conntable %p", t)
+	log.Infof("init conntable %p", t)
 	t.conns = make(map[string]*connWatcher)
 	t.connRequests = make(chan *connRequest)
 	t.updates = make(chan *connUpdate)
@@ -54,18 +54,19 @@ func (t *connTable) manage() {
 		case update := <-t.updates:
 			t.handleUpdate(update)
 		case addr := <-t.expiries:
-			if t.conns[addr].expiryTime.Before(time.Now()) {
-				log.Debug("Conntable %p notified that the watcher for address %s has expired. Remove it.", t, addr)
-				t.conns[addr].stop <- true
-				t.conns[addr].conn.Close()
+			watcher := t.conns[addr]
+			if watcher.expiryTime.Before(time.Now()) {
+				log.Debugf("conntable %p notified that the watcher for address %s has expired. Remove it.", t, addr)
+				watcher.stop <- true
+				watcher.conn.Close()
 				delete(t.conns, addr)
 			} else {
-                // Due to a race condition, the socket has been updated since this expiry happened.
-                // Ignore the expiry since we already have a new socket for this address.
-                log.Warn("Ignored spurious expiry for address %s in conntable %p", t, addr)
-            }
+				// Due to a race condition, the socket has been updated since this expiry happened.
+				// Ignore the expiry since we already have a new socket for this address.
+				log.Warnf("ignored spurious expiry for address %s in conntable %p", t, addr)
+			}
 		case <-t.stop:
-			log.Info("Conntable %p stopped")
+			log.Infof("conntable %p stopped")
 			t.stopped = true
 			for _, watcher := range t.conns {
 				watcher.stop <- true
@@ -81,7 +82,7 @@ func (t *connTable) manage() {
 // If it is a known connection, restart the timer.
 func (t *connTable) Notify(addr string, conn *connection) {
 	if t.stopped {
-		log.Debug("Ignoring conn notification for address %s after table stop.", addr)
+		log.Debugf("ignoring conn notification for address %s after table stop.", addr)
 		return
 	}
 
@@ -89,11 +90,18 @@ func (t *connTable) Notify(addr string, conn *connection) {
 }
 
 func (t *connTable) handleUpdate(update *connUpdate) {
-	log.Debug("Update received in connTable %p for address %s", t, update.addr)
+	log.Debugf("update received in connTable %p for address %s", t, update.addr)
 	watcher, entry_exists := t.conns[update.addr]
 	if !entry_exists {
-		log.Debug("No connection watcher registered for %s; spawn one", update.addr)
-		watcher = &connWatcher{update.addr, update.conn, timing.NewTimer(c_SOCKET_EXPIRY), timing.Now().Add(c_SOCKET_EXPIRY), t.expiries, make(chan bool)}
+		log.Debugf("no connection watcher registered for %s; spawn one", update.addr)
+		watcher = &connWatcher{
+			addr:       update.addr,
+			conn:       update.conn,
+			timer:      timing.NewTimer(c_SOCKET_EXPIRY),
+			expiryTime: timing.Now().Add(c_SOCKET_EXPIRY),
+			expiry:     t.expiries,
+			stop:       make(chan bool),
+		}
 		t.conns[update.addr] = watcher
 		go watcher.loop()
 	}
@@ -108,7 +116,7 @@ func (t *connTable) GetConn(addr string) *connection {
 	t.connRequests <- &connRequest{addr, responseChan}
 	conn := <-responseChan
 
-	log.Debug("Query connection for address %s returns %p", conn)
+	log.Debugf("query connection for address %s returns %p", conn)
 	return conn
 }
 
@@ -143,13 +151,13 @@ func (watcher *connWatcher) loop() {
 		select {
 		case <-watcher.timer.C():
 			// Socket expiry timer has run out. Close the connection.
-			log.Debug("Socket %p (%s) inactive for too long; close it", watcher.conn, watcher.addr)
+			log.Debugf("socket %p (%s) inactive for too long; close it", watcher.conn, watcher.addr)
 			watcher.expiry <- watcher.addr
 
 		case stop := <-watcher.stop:
 			// We've received a termination signal; stop managing this connection.
 			if stop {
-				log.Info("Connection watcher for address %s got the kill signal. Stopping.", watcher.addr)
+				log.Infof("connection watcher for address %s got the kill signal. Stopping.", watcher.addr)
 				watcher.timer.Stop()
 				break
 			}

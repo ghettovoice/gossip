@@ -3,21 +3,26 @@ package transaction
 import (
 	"testing"
 	"time"
+
+	"github.com/ghettovoice/gossip/log"
 )
 
 var c_SERVER string = "localhost:5060"
 var c_CLIENT string = "localhost:5061"
 
 func TestSendInvite(t *testing.T) {
+	logger := log.WithField("test", t.Name())
 	invite, err := request([]string{
 		"INVITE sip:joe@bloggs.com SIP/2.0",
 		"Via: SIP/2.0/UDP " + c_CLIENT + ";branch=z9hG4bK776asdhds",
 		"",
 		"",
-	})
+	}, logger)
 	assertNoError(t, err)
 
-	test := transactionTest{t: t,
+	test := transactionTest{
+		t:   t,
+		log: logger,
 		actions: []action{
 			&userSend{invite},
 			&transportRecv{invite},
@@ -26,15 +31,18 @@ func TestSendInvite(t *testing.T) {
 }
 
 func TestInviteTimeout(t *testing.T) {
+	logger := log.WithField("test", t.Name())
 	invite, err := request([]string{
 		"INVITE sip:joe@bloggs.com SIP/2.0",
 		"Via: SIP/2.0/UDP " + c_CLIENT + ";branch=z9hG4bK776asdhds",
 		"",
 		"",
-	})
+	}, logger)
 	assertNoError(t, err)
 
-	test := transactionTest{t: t,
+	test := transactionTest{
+		t:   t,
+		log: logger,
 		actions: []action{
 			&userSend{invite},
 			&transportRecv{invite},
@@ -55,13 +63,14 @@ func TestInviteTimeout(t *testing.T) {
 }
 
 func TestReceiveOK(t *testing.T) {
+	logger := log.WithField("test", t.Name())
 	invite, err := request([]string{
 		"INVITE sip:joe@bloggs.com SIP/2.0",
 		"CSeq: 1 INVITE",
 		"Via: SIP/2.0/UDP " + c_CLIENT + ";branch=z9hG4bK776asdhds",
 		"",
 		"",
-	})
+	}, logger)
 	assertNoError(t, err)
 
 	ok, err := response([]string{
@@ -70,10 +79,12 @@ func TestReceiveOK(t *testing.T) {
 		"Via: SIP/2.0/UDP " + c_SERVER + ";branch=z9hG4bK776asdhds",
 		"",
 		"",
-	})
+	}, logger)
 	assertNoError(t, err)
 
-	test := transactionTest{t: t,
+	test := transactionTest{
+		t:   t,
+		log: logger,
 		actions: []action{
 			&userSend{invite},
 			&transportRecv{invite},

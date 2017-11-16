@@ -2,14 +2,15 @@ package transaction
 
 import (
 	"fmt"
-	"github.com/stefankopieczek/gossip/base"
-	"github.com/stefankopieczek/gossip/log"
-	"github.com/stefankopieczek/gossip/parser"
-	"github.com/stefankopieczek/gossip/timing"
-	"github.com/stefankopieczek/gossip/transport"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/ghettovoice/gossip/base"
+	"github.com/ghettovoice/gossip/log"
+	"github.com/ghettovoice/gossip/parser"
+	"github.com/ghettovoice/gossip/timing"
+	"github.com/ghettovoice/gossip/transport"
 )
 
 // UTs for transaction layer.
@@ -62,21 +63,22 @@ type transactionTest struct {
 	tm        *Manager
 	transport *dummyTransport
 	lastTx    *ClientTransaction
+	log       log.Logger
 }
 
 func (test *transactionTest) Execute() {
 	var err error
 	timing.MockMode = true
 	log.SetDefaultLogLevel(log.DEBUG)
-	transport := newDummyTransport()
-	test.tm, err = NewManager(transport, c_CLIENT)
+	tp := newDummyTransport()
+	test.tm, err = NewManager(tp, c_CLIENT)
 	assertNoError(test.t, err)
 	defer test.tm.Stop()
 
-	test.transport = transport
+	test.transport = tp
 
 	for _, actn := range test.actions {
-		test.t.Logf("Performing action %v", actn)
+		test.t.Logf("performing action %v", actn)
 		assertNoError(test.t, actn.Act(test))
 	}
 }
@@ -96,29 +98,50 @@ type transportSend struct {
 }
 
 func (actn *transportSend) Act(test *transactionTest) error {
-	test.t.Logf("Transport Layer sending message\n%v", actn.msg.String())
+	test.t.Logf("transport Layer sending message\n%v", actn.msg.String())
 	test.transport.toTM <- actn.msg
 	return nil
 }
 
 type userRecv struct {
-	expected *base.Response
+	expected base.SipMessage
 }
 
 func (actn *userRecv) Act(test *transactionTest) error {
-	responses := test.lastTx.Responses()
+	// check responses on Client transaction
 	select {
-	case response, ok := <-responses:
+	case response, ok := <-test.lastTx.Responses():
 		if !ok {
-			return fmt.Errorf("Response channel prematurely closed")
+			return fmt.Errorf("response channel prematurely closed")
 		} else if response.String() != actn.expected.String() {
 			return fmt.Errorf("Unexpected response:\n%s", response.String())
 		} else {
-			test.t.Logf("Transaction User received correct message\n%v", response.String())
+			test.t.Logf("transaction User received correct response\n%v", response.String())
 			return nil
 		}
 	case <-time.After(time.Second):
-		return fmt.Errorf("Timed out waiting for response")
+		return fmt.Errorf("timed out waiting for response")
+	}
+}
+
+type userRecvSrv struct {
+	expected base.SipMessage
+}
+
+func (actn *userRecvSrv) Act(test *transactionTest) error {
+	// check requests on transaction manager
+	select {
+	case tx, ok := <-test.tm.Requests():
+		if !ok {
+			return fmt.Errorf("requests channel prematurely closed")
+		} else if tx.Origin().String() != actn.expected.String() {
+			return fmt.Errorf("Unexpected request:\n%s", tx.Origin().String())
+		} else {
+			test.t.Logf("transaction User received correct request\n%v", tx.Origin().String())
+			return nil
+		}
+	case <-time.After(time.Second):
+		return fmt.Errorf("timed out waiting for request")
 	}
 }
 
@@ -130,15 +153,15 @@ func (actn *transportRecv) Act(test *transactionTest) error {
 	select {
 	case msg, ok := <-test.transport.messages:
 		if !ok {
-			return fmt.Errorf("Transport layer receive channel prematurely closed")
+			return fmt.Errorf("transport layer receive channel prematurely closed")
 		} else if msg.msg.String() != actn.expected.String() {
-			return fmt.Errorf("Unexpected message arrived at transport:\n%s", msg.msg.String())
+			return fmt.Errorf("unexpected message arrived at transport:\n%s", msg.msg.String())
 		} else {
-			test.t.Logf("Transport received correct message\n %v", msg.msg.String())
+			test.t.Logf("transport received correct message\n %v", msg.msg.String())
 			return nil
 		}
 	case <-time.After(time.Second):
-		return fmt.Errorf("Timed out waiting for message at transport")
+		return fmt.Errorf("timed out waiting for message at transport")
 	}
 }
 
@@ -164,12 +187,12 @@ func assertNoError(t *testing.T, err error) {
 	}
 }
 
-func message(rawMsg []string) (base.SipMessage, error) {
-	return parser.ParseMessage([]byte(strings.Join(rawMsg, "\r\n")))
+func message(rawMsg []string, logger log.Logger) (base.SipMessage, error) {
+	return parser.ParseMessage([]byte(strings.Join(rawMsg, "\r\n")), logger)
 }
 
-func request(rawMsg []string) (*base.Request, error) {
-	msg, err := message(rawMsg)
+func request(rawMsg []string, logger log.Logger) (*base.Request, error) {
+	msg, err := message(rawMsg, logger)
 
 	if err != nil {
 		return nil, err
@@ -183,8 +206,8 @@ func request(rawMsg []string) (*base.Request, error) {
 	}
 }
 
-func response(rawMsg []string) (*base.Response, error) {
-	msg, err := message(rawMsg)
+func response(rawMsg []string, logger log.Logger) (*base.Response, error) {
+	msg, err := message(rawMsg, logger)
 
 	if err != nil {
 		return nil, err
