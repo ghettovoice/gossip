@@ -97,7 +97,7 @@ type transportSend struct {
 }
 
 func (actn *transportSend) Act(test *transactionTest) error {
-	test.t.Logf("Transport Layer sending message\n%v", actn.msg.String())
+	test.t.Logf("transport Layer sending message\n%v", actn.msg.String())
 	test.transport.toTM <- actn.msg
 	return nil
 }
@@ -111,15 +111,15 @@ func (actn *userRecv) Act(test *transactionTest) error {
 	select {
 	case response, ok := <-responses:
 		if !ok {
-			return fmt.Errorf("Response channel prematurely closed")
+			return fmt.Errorf("response channel prematurely closed")
 		} else if response.String() != actn.expected.String() {
 			return fmt.Errorf("Unexpected response:\n%s", response.String())
 		} else {
-			test.t.Logf("Transaction User received correct message\n%v", response.String())
+			test.t.Logf("transaction User received correct message\n%v", response.String())
 			return nil
 		}
 	case <-time.After(time.Second):
-		return fmt.Errorf("Timed out waiting for response")
+		return fmt.Errorf("timed out waiting for response")
 	}
 }
 
@@ -131,15 +131,15 @@ func (actn *transportRecv) Act(test *transactionTest) error {
 	select {
 	case msg, ok := <-test.transport.messages:
 		if !ok {
-			return fmt.Errorf("Transport layer receive channel prematurely closed")
+			return fmt.Errorf("transport layer receive channel prematurely closed")
 		} else if msg.msg.String() != actn.expected.String() {
-			return fmt.Errorf("Unexpected message arrived at transport:\n%s", msg.msg.String())
+			return fmt.Errorf("unexpected message arrived at transport:\n%s", msg.msg.String())
 		} else {
-			test.t.Logf("Transport received correct message\n %v", msg.msg.String())
+			test.t.Logf("transport received correct message\n %v", msg.msg.String())
 			return nil
 		}
 	case <-time.After(time.Second):
-		return fmt.Errorf("Timed out waiting for message at transport")
+		return fmt.Errorf("timed out waiting for message at transport")
 	}
 }
 

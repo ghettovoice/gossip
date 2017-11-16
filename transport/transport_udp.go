@@ -76,7 +76,7 @@ func (udp *Udp) listen(conn *net.UDPConn) {
 
 	buffer := make([]byte, c_BUFSIZE)
 	iter := func(conn *net.UDPConn, buffer []byte) bool {
-		logger := log.WithField("pkt-tag", utils.RandStr(4, "pkt-"))
+		logger := log.WithField("conn-tag", utils.RandStr(4, "conn-"))
 		// eat bytes
 		num, _, err := conn.ReadFromUDP(buffer)
 		if err != nil {

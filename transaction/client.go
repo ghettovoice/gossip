@@ -1,6 +1,9 @@
 package transaction
 
 import (
+	"errors"
+	"time"
+
 	"github.com/discoviking/fsm"
 	"github.com/ghettovoice/gossip/base"
 	"github.com/ghettovoice/gossip/timing"
@@ -29,6 +32,115 @@ const (
 	client_input_delete
 )
 
+type ClientTransaction struct {
+	transaction
+
+	tu           chan *base.Response // Channel to transaction user.
+	tu_err       chan error          // Channel to report up errors to TU.
+	timer_a_time time.Duration       // Current duration of timer A.
+	timer_a      timing.Timer
+	timer_b      timing.Timer
+	timer_d_time time.Duration // Current duration of timer A.
+	timer_d      timing.Timer
+}
+
+func (tx *ClientTransaction) Delete() {
+	tx.Log().Debugf("deleting transaction %p from manager %p", tx, tx.tm)
+	err := tx.tm.delClientTx(tx)
+	if err != nil {
+		tx.Log().Warn(err)
+		return
+	}
+}
+
+func (tx *ClientTransaction) Receive(msg base.SipMessage) {
+	res, ok := msg.(*base.Response)
+	if !ok {
+		tx.Log().Warnf("client transaction %p received request", tx)
+		return
+	}
+
+	tx.lastResp = res
+
+	var input fsm.Input
+	switch {
+	case res.StatusCode < 200:
+		input = client_input_1xx
+	case res.StatusCode < 300:
+		input = client_input_2xx
+	default:
+		input = client_input_300_plus
+	}
+
+	tx.fsm.Spin(input)
+}
+
+// Resend the originating request.
+func (tx *ClientTransaction) resend() {
+	tx.Log().Infof("client transaction %p resending request: %v", tx, tx.origin.Short())
+	err := tx.transport.Send(tx.dest, tx.origin)
+	if err != nil {
+		tx.fsm.Spin(client_input_transport_err)
+	}
+}
+
+// Pass up the most recently received response to the TU.
+func (tx *ClientTransaction) passUp() {
+	tx.Log().Infof("client transaction %p passing up response: %v", tx, tx.lastResp.Short())
+	tx.tu <- tx.lastResp
+}
+
+// Send an error to the TU.
+func (tx *ClientTransaction) transportError() {
+	tx.Log().Infof("client transaction %p had a transport-level error", tx)
+	tx.tu_err <- errors.New("failed to send message")
+}
+
+// Inform the TU that the transaction timed out.
+func (tx *ClientTransaction) timeoutError() {
+	tx.Log().Infof("client transaction %p timed out", tx)
+	tx.tu_err <- errors.New("transaction timed out")
+}
+
+// Send an automatic ACK - RFC 3261 - 17.1.1.3.
+func (tx *ClientTransaction) Ack() {
+	ack := base.NewRequest(
+		base.ACK,
+		tx.origin.Recipient,
+		tx.origin.SipVersion(),
+		[]base.SipHeader{},
+		"",
+		tx.Log(),
+	)
+
+	// Copy headers from original request.
+	// TODO: Safety
+	base.CopyHeaders("From", tx.origin, ack)
+	base.CopyHeaders("Call-Id", tx.origin, ack)
+	base.CopyHeaders("Route", tx.origin, ack)
+	cseq := tx.origin.Headers("CSeq")[0].Copy()
+	cseq.(*base.CSeq).MethodName = base.ACK
+	ack.AddHeader(cseq)
+	via := tx.origin.Headers("Via")[0].Copy()
+	ack.AddHeader(via)
+
+	// Copy headers from response.
+	base.CopyHeaders("To", tx.lastResp, ack)
+
+	// Send the ACK.
+	tx.transport.Send(tx.dest, ack)
+}
+
+// Return the channel we send responses on.
+func (tx *ClientTransaction) Responses() <-chan *base.Response {
+	return (<-chan *base.Response)(tx.tu)
+}
+
+// Return the channel we send errors on.
+func (tx *ClientTransaction) Errors() <-chan error {
+	return (<-chan error)(tx.tu_err)
+}
+
 // Initialises the correct kind of FSM based on request method.
 func (tx *ClientTransaction) initFSM() {
 	if tx.origin.Method == base.INVITE {
@@ -39,7 +151,7 @@ func (tx *ClientTransaction) initFSM() {
 }
 
 func (tx *ClientTransaction) initInviteFSM() {
-	tx.Log().Debug("initialising client INVITE transaction %p FSM", tx)
+	tx.Log().Debugf("initialising client INVITE transaction %p FSM", tx)
 
 	// Define Actions
 

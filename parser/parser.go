@@ -138,7 +138,7 @@ type parser struct {
 }
 
 func (p *parser) Log() log.Logger {
-	return p.log
+	return p.log.WithField("pars-ptr", fmt.Sprintf("%p", p))
 }
 
 func (p *parser) Write(data []byte) (n int, err error) {

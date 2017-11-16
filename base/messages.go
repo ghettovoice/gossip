@@ -359,6 +359,7 @@ func (msg *message) SetSipVersion(version string) {
 
 func (msg *message) logFields() map[string]interface{} {
 	fields := make(map[string]interface{})
+	fields["msg-ptr"] = fmt.Sprintf("%p", msg)
 	// add cseq
 	if cseq, err := msg.CSeq(); err == nil {
 		fields["cseq"] = cseq

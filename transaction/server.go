@@ -34,8 +34,75 @@ const (
 	server_input_delete
 )
 
-// Define actions.
+type ServerTransaction struct {
+	transaction
 
+	tu      chan *base.Response // Channel to transaction user.
+	tu_err  chan error          // Channel to report up errors to TU.
+	ack     chan *base.Request  // Channel we send the ACK up on.
+	timer_g timing.Timer
+	timer_h timing.Timer
+	timer_i timing.Timer
+}
+
+func (tx *ServerTransaction) Delete() {
+	tx.Log().Debugf("deleting transaction %p from manager %p", tx, tx.tm)
+	err := tx.tm.delServerTx(tx)
+	if err != nil {
+		tx.Log().Warn(err)
+		return
+	}
+}
+
+func (tx *ServerTransaction) Receive(msg base.SipMessage) {
+	req, ok := msg.(*base.Request)
+	if !ok {
+		tx.Log().Warn("server transaction %p received response", tx)
+		return
+	}
+
+	var input fsm.Input = fsm.NO_INPUT
+	switch {
+	case req.Method == tx.origin.Method:
+		input = server_input_request
+	case req.Method == base.ACK: // ACK for non-2xx response
+		input = server_input_ack
+		tx.ack <- req
+	default:
+		tx.Log().Warn("invalid message correlated to server transaction %p", tx)
+		return
+	}
+
+	tx.fsm.Spin(input)
+}
+
+func (tx *ServerTransaction) Respond(r *base.Response) {
+	tx.lastResp = r
+
+	var input fsm.Input
+	switch {
+	case r.StatusCode < 200:
+		input = server_input_user_1xx
+	case r.StatusCode < 300:
+		input = server_input_user_2xx
+	default:
+		input = server_input_user_300_plus
+	}
+
+	tx.fsm.Spin(input)
+}
+
+// Ack returns channel for ACK requests on non-2xx responses - RFC 3261 - 17.1.1.3
+func (tx *ServerTransaction) Ack() <-chan *base.Request {
+	return (<-chan *base.Request)(tx.ack)
+}
+
+// Return the channel we send errors on.
+func (tx *ServerTransaction) Errors() <-chan error {
+	return (<-chan error)(tx.tu_err)
+}
+
+// Define actions.
 // Send response
 func (tx *ServerTransaction) act_respond() fsm.Input {
 	err := tx.transport.Send(tx.dest, tx.lastResp)

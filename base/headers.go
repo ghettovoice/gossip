@@ -24,6 +24,10 @@ type NoString struct{}
 
 func (n NoString) implementsMaybeString() {}
 
+func (s NoString) String() string {
+	return ""
+}
+
 // String represents an actual string.
 type String struct {
 	S string
