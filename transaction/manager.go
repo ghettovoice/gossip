@@ -85,55 +85,23 @@ func (mng *Manager) Send(req *base.Request, dest string) *ClientTransaction {
 	req.Log().Infof("sending request to %v: %v", dest, req.Short())
 	req.Log().Debugf("sending request:\r\n%s", req.String())
 
-	tx := &ClientTransaction{}
-	tx.origin = req
-	tx.dest = dest
-	tx.transport = mng.transport
-	tx.tm = mng
-
-	tx.initFSM()
-
-	tx.tu = make(chan *base.Response, 3)
-	tx.tu_err = make(chan error, 1)
-
-	// RFC 3261 - 17.1.1.2
-	// If an unreliable transport is being used, the client transaction MUST start timer A with a value of T1.
-	// If a reliable transport is being used, the client transaction SHOULD NOT
-	// start timer A (Timer A controls request retransmissions).
-	// Timer A - retransmission
-	if !tx.transport.IsReliable() {
-		tx.Log().Debugf("client transaction %p, timer_a set to %v", tx, Timer_A)
-		tx.timer_a_time = Timer_A
-		tx.timer_a = timing.AfterFunc(tx.timer_a_time, func() {
-			tx.Log().Debugf("client transaction %p, timer_a fired", tx)
-			tx.fsm.Spin(client_input_timer_a)
-		})
-	}
-	// Timer B - timeout
-	tx.Log().Debugf("client transaction %p, timer_b set to %v", tx, Timer_B)
-	tx.timer_b = timing.AfterFunc(Timer_B, func() {
-		tx.Log().Debugf("client transaction %p, timer_b fired", tx)
-		tx.fsm.Spin(client_input_timer_b)
-	})
-
-	// Timer D is set to 32 seconds for unreliable transports, and 0 seconds otherwise.
-	if tx.transport.IsReliable() {
-		tx.timer_d_time = 0
-	} else {
-		tx.timer_d_time = Timer_D
-	}
+	tx := NewClientTransaction(req, dest, mng.transport)
+	tx.Init()
 
 	err := mng.transport.Send(dest, req)
 	if err != nil {
-		tx.Log().Warnf("failed to send request %s: %s", req.Short(), err)
-		tx.lastErr = err
-		tx.fsm.Spin(client_input_transport_err)
+		tx.transportError(err, req)
+		//err = fmt.Errorf("failed to send request %s: %s", req.Short(), err)
+		//tx.Log().Warn(err)
+		//tx.lastErr = err
+		//tx.fsm.Spin(client_input_transport_err)
 	}
 
 	if err := mng.putClientTx(tx); err != nil {
-		tx.Log().Warnf("failed to store client transaction %p: %s", tx, err)
+		err = fmt.Errorf("failed to store client transaction %p: %s", tx, err)
+		tx.Log().Error(err)
+		tx.lastErr = err
 		// TODO should tx transition to terminated state?
-		//tx.lastErr = err
 		//tx.fsm.Spin(client_state_terminated)
 	}
 

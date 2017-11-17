@@ -11,7 +11,6 @@ type ServerTransaction struct {
 	transaction
 
 	tu      chan *base.Response // Channel to transaction user.
-	tu_err  chan error          // Channel to report up errors to TU.
 	ack     chan *base.Request  // Channel we send the ACK up on.
 	timer_g timing.Timer
 	timer_h timing.Timer
@@ -68,11 +67,6 @@ func (tx *ServerTransaction) Respond(res *base.Response) {
 // Ack returns channel for ACK requests on non-2xx responses - RFC 3261 - 17.1.1.3
 func (tx *ServerTransaction) Ack() <-chan *base.Request {
 	return (<-chan *base.Request)(tx.ack)
-}
-
-// Return the channel we send errors on.
-func (tx *ServerTransaction) Errors() <-chan error {
-	return (<-chan error)(tx.tu_err)
 }
 
 // Trying sends 100 Trying response - RFC 3261 - 17.2.1.

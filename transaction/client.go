@@ -1,7 +1,6 @@
 package transaction
 
 import (
-	"fmt"
 	"time"
 
 	"github.com/discoviking/fsm"
@@ -14,7 +13,6 @@ type ClientTransaction struct {
 	transaction
 
 	tu           chan *base.Response // Channel to transaction user.
-	tu_err       chan error          // Channel to report up errors to TU.
 	timer_a_time time.Duration       // Current duration of timer A.
 	timer_a      timing.Timer
 	timer_b      timing.Timer
@@ -22,6 +20,49 @@ type ClientTransaction struct {
 	timer_d      timing.Timer
 }
 
+func NewClientTransaction(req *base.Request, dest string, tm *Manager) *ClientTransaction {
+	tx := &ClientTransaction{}
+	tx.origin = req
+	tx.dest = dest
+	tx.tm = tm
+	tx.transport = tm.transport
+	tx.tu = make(chan *base.Response, 3)
+	tx.tu_err = make(chan error, 1)
+
+	return tx
+}
+
+// Init performs Client transaction timers initialization and prepares it to send over transport.
+func (tx *ClientTransaction) Init() {
+	tx.initFSM()
+	// RFC 3261 - 17.1.1.2.
+	// If an unreliable transport is being used, the client transaction MUST start timer A with a value of T1.
+	// If a reliable transport is being used, the client transaction SHOULD NOT
+	// start timer A (Timer A controls request retransmissions).
+	// Timer A - retransmission
+	if !tx.transport.IsReliable() {
+		tx.Log().Debugf("client transaction %p, timer_a set to %v", tx, Timer_A)
+		tx.timer_a_time = Timer_A
+		tx.timer_a = timing.AfterFunc(tx.timer_a_time, func() {
+			tx.Log().Debugf("client transaction %p, timer_a fired", tx)
+			tx.fsm.Spin(client_input_timer_a)
+		})
+	}
+	// Timer B - timeout
+	tx.Log().Debugf("client transaction %p, timer_b set to %v", tx, Timer_B)
+	tx.timer_b = timing.AfterFunc(Timer_B, func() {
+		tx.Log().Debugf("client transaction %p, timer_b fired", tx)
+		tx.fsm.Spin(client_input_timer_b)
+	})
+	// Timer D is set to 32 seconds for unreliable transports, and 0 seconds otherwise.
+	if tx.transport.IsReliable() {
+		tx.timer_d_time = 0
+	} else {
+		tx.timer_d_time = Timer_D
+	}
+}
+
+// TODO should be refactored to not use tm reference.
 func (tx *ClientTransaction) Delete() {
 	tx.Log().Debugf("deleting transaction %p from manager %p", tx, tx.tm)
 	err := tx.tm.delClientTx(tx)
@@ -54,44 +95,39 @@ func (tx *ClientTransaction) Receive(msg base.SipMessage) {
 }
 
 // Resend the originating request.
-func (tx *ClientTransaction) resend() {
-	tx.Log().Infof("client transaction %p resending request: %v", tx, tx.origin.Short())
-	err := tx.transport.Send(tx.dest, tx.origin)
-	if err != nil {
-		tx.fsm.Spin(client_input_transport_err)
-	}
-}
-
-// Pass up the most recently received response to the TU.
-func (tx *ClientTransaction) passUp() {
-	tx.Log().Infof("client transaction %p passing up response: %v", tx, tx.lastResp.Short())
-	tx.tu <- tx.lastResp
-}
-
-// Send an error to the TU.
-func (tx *ClientTransaction) transportError() {
-	err := "failed to send request"
-	if tx.lastErr != nil {
-		err = tx.lastErr.Error()
-	}
-	tx.Log().Infof("client transaction %p had a transport-level error: %s", tx, err)
-	tx.tu_err <- fmt.Errorf("transport error occurred: %s", err)
-}
-
-// Inform the TU that the transaction timed out.
-func (tx *ClientTransaction) timeoutError() {
-	tx.Log().Infof("client transaction %p timed out", tx)
-	tx.tu_err <- fmt.Errorf("client transaction %p timed out", tx)
-}
+//func (tx *ClientTransaction) resend() {
+//	tx.Log().Infof("client transaction %p resending request: %v", tx, tx.origin.Short())
+//	err := tx.transport.Send(tx.dest, tx.origin)
+//	if err != nil {
+//		tx.fsm.Spin(client_input_transport_err)
+//	}
+//}
+//
+//// Pass up the most recently received response to the TU.
+//func (tx *ClientTransaction) passUp() {
+//	tx.Log().Infof("client transaction %p passing up response: %v", tx, tx.lastResp.Short())
+//	tx.tu <- tx.lastResp
+//}
+//
+//// Send an error to the TU.
+//func (tx *ClientTransaction) transportError() {
+//	err := "failed to send request"
+//	if tx.lastErr != nil {
+//		err = tx.lastErr.Error()
+//	}
+//	tx.Log().Infof("client transaction %p had a transport-level error: %s", tx, err)
+//	tx.tu_err <- fmt.Errorf("transport error occurred: %s", err)
+//}
+//
+//// Inform the TU that the transaction timed out.
+//func (tx *ClientTransaction) timeoutError() {
+//	tx.Log().Infof("client transaction %p timed out", tx)
+//	tx.tu_err <- fmt.Errorf("client transaction %p timed out", tx)
+//}
 
 // Return the channel we send responses on.
 func (tx *ClientTransaction) Responses() <-chan *base.Response {
 	return (<-chan *base.Response)(tx.tu)
-}
-
-// Return the channel we send errors on.
-func (tx *ClientTransaction) Errors() <-chan error {
-	return (<-chan error)(tx.tu_err)
 }
 
 // ack sends an automatic ACK on non 2xx response - RFC 3261 - 17.1.1.3.

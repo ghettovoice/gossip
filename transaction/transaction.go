@@ -30,6 +30,7 @@ type Transaction interface {
 	Delete()
 	IsInvite() bool
 	IsAck() bool
+	Errors() <-chan error
 }
 
 type transaction struct {
@@ -40,6 +41,8 @@ type transaction struct {
 	transport transport.Manager
 	tm        *Manager
 	lastErr   error
+	tu        chan base.SipMessage // Channel to transaction user.
+	tu_err    chan error           // Channel to report up errors to TU.
 }
 
 func (tx *transaction) Log() log.Logger {
@@ -68,4 +71,13 @@ func (tx *transaction) IsInvite() bool {
 
 func (tx *transaction) IsAck() bool {
 	return tx.origin.IsAck()
+}
+
+// Returns the channel we send errors on.
+func (tx *transaction) Errors() <-chan error {
+	return (<-chan error)(tx.tu_err)
+}
+
+func (tx *transaction) transportError(err error, req *base.Request) {
+
 }

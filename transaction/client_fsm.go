@@ -244,7 +244,6 @@ func (tx *ClientTransaction) act_trans_err() fsm.Input {
 
 func (tx *ClientTransaction) act_timeout() fsm.Input {
 	tx.Log().Debugf("client transaction %p, act_timeout", tx)
-	// todo send 408 to TU?
 	tx.timeoutError()
 	return client_input_delete
 }
