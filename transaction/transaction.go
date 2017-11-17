@@ -28,6 +28,8 @@ type Transaction interface {
 	Destination() string
 	Transport() transport.Manager
 	Delete()
+	IsInvite() bool
+	IsAck() bool
 }
 
 type transaction struct {
@@ -58,4 +60,12 @@ func (tx *transaction) Transport() transport.Manager {
 
 func (tx *transaction) LastResponse() *base.Response {
 	return tx.lastResp
+}
+
+func (tx *transaction) IsInvite() bool {
+	return tx.origin.IsInvite()
+}
+
+func (tx *transaction) IsAck() bool {
+	return tx.origin.IsAck()
 }

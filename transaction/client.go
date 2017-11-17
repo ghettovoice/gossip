@@ -42,9 +42,9 @@ func (tx *ClientTransaction) Receive(msg base.SipMessage) {
 
 	var input fsm.Input
 	switch {
-	case res.StatusCode < 200:
+	case res.IsProvisional():
 		input = client_input_1xx
-	case res.StatusCode < 300:
+	case res.IsSuccess():
 		input = client_input_2xx
 	default:
 		input = client_input_300_plus

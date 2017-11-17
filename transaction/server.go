@@ -1,8 +1,6 @@
 package transaction
 
 import (
-	"errors"
-
 	"github.com/discoviking/fsm"
 	"github.com/ghettovoice/gossip/base"
 	"github.com/ghettovoice/gossip/timing"
@@ -51,14 +49,14 @@ func (tx *ServerTransaction) Receive(msg base.SipMessage) {
 	tx.fsm.Spin(input)
 }
 
-func (tx *ServerTransaction) Respond(r *base.Response) {
-	tx.lastResp = r
+func (tx *ServerTransaction) Respond(res *base.Response) {
+	tx.lastResp = res
 
 	var input fsm.Input
 	switch {
-	case r.StatusCode < 200:
+	case res.IsProvisional():
 		input = server_input_user_1xx
-	case r.StatusCode < 300:
+	case res.IsSuccess():
 		input = server_input_user_2xx
 	default:
 		input = server_input_user_300_plus

@@ -52,6 +52,10 @@ func (t *dummyTransport) GetChannel() transport.Listener {
 	return t.toTM
 }
 
+func (t *dummyTransport) IsReliable() bool {
+	return false
+}
+
 // Test infra.
 type action interface {
 	Act(test *transactionTest) error

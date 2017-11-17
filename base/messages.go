@@ -502,6 +502,14 @@ func (request *Request) String() string {
 	return buffer.String()
 }
 
+func (request *Request) IsInvite() bool {
+	return request.Method == INVITE
+}
+
+func (request *Request) IsAck() bool {
+	return request.Method == ACK
+}
+
 // A SIP response object  (c.f. RFC 3261 section 7.2).
 type Response struct {
 	message
@@ -577,6 +585,26 @@ func (response *Response) String() string {
 	return buffer.String()
 }
 
-func (response *Response) Is2xx() bool {
+func (response *Response) IsProvisional() bool {
+	return response.StatusCode < 200
+}
+
+func (response *Response) IsSuccess() bool {
 	return response.StatusCode >= 200 && response.StatusCode < 300
+}
+
+func (response *Response) IsRedirection() bool {
+	return response.StatusCode >= 300 && response.StatusCode < 400
+}
+
+func (response *Response) IsClientError() bool {
+	return response.StatusCode >= 400 && response.StatusCode < 500
+}
+
+func (response *Response) IsServerError() bool {
+	return response.StatusCode >= 500 && response.StatusCode < 600
+}
+
+func (response *Response) IsGlobalError() bool {
+	return response.StatusCode >= 600
 }
