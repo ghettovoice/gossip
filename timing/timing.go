@@ -34,6 +34,9 @@ func (t *realTimer) C() <-chan time.Time {
 }
 
 func (t *realTimer) Reset(d time.Duration) bool {
+	if !t.Timer.Stop() {
+		<-t.Timer.C
+	}
 	return t.Timer.Reset(d)
 }
 

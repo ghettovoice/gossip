@@ -2,7 +2,6 @@ package transaction
 
 import (
 	"fmt"
-	"time"
 
 	"github.com/ghettovoice/gossip/base"
 	"github.com/ghettovoice/gossip/log"
@@ -20,6 +19,8 @@ type Manager struct {
 	*store
 	transport transport.Manager
 	requests  chan *ServerTransaction
+	// not matched responses
+	responses chan *base.Response
 }
 
 func NewManager(t transport.Manager, addr string) (*Manager, error) {
@@ -29,6 +30,7 @@ func NewManager(t transport.Manager, addr string) (*Manager, error) {
 	}
 
 	mng.requests = make(chan *ServerTransaction, 5)
+	mng.responses = make(chan *base.Response, 5)
 	log.Debug("run transaction manager")
 	// Spin up a goroutine to pull messages up from the depths.
 	c := mng.transport.GetChannel()
@@ -57,15 +59,20 @@ func (mng *Manager) Requests() <-chan *ServerTransaction {
 	return (<-chan *ServerTransaction)(mng.requests)
 }
 
+// Responses returns channel where not matched responses arrived directly from trans[prt layer - RFC 3261 - 17.1.1.2.
+func (mng *Manager) Responses() <-chan *base.Response {
+	return (<-chan *base.Response)(mng.responses)
+}
+
 func (mng *Manager) handle(msg base.SipMessage) {
 	msg.Log().Infof("received message: %s", msg.Short())
 	msg.Log().Debugf("received message:\r\n%s", msg.String())
 
 	switch m := msg.(type) {
-	// acts as UAS, Server Transaction - RFC 17.2
+	// acts as UAS, Server Transaction - RFC 3261 17.2
 	case *base.Request:
 		mng.request(m)
-	// acts as UAC, Client Transaction - RFC 17.1
+	// acts as UAC, Client Transaction - RFC 3261 17.1
 	case *base.Response:
 		mng.correlate(m)
 	default:
@@ -74,12 +81,12 @@ func (mng *Manager) handle(msg base.SipMessage) {
 }
 
 // Create Client transaction.
-func (mng *Manager) Send(r *base.Request, dest string) *ClientTransaction {
-	r.Log().Infof("sending message to %v: %v", dest, r.Short())
-	r.Log().Debugf("sending message:\r\n%s", r.String())
+func (mng *Manager) Send(req *base.Request, dest string) *ClientTransaction {
+	req.Log().Infof("sending request to %v: %v", dest, req.Short())
+	req.Log().Debugf("sending request:\r\n%s", req.String())
 
 	tx := &ClientTransaction{}
-	tx.origin = r
+	tx.origin = req
 	tx.dest = dest
 	tx.transport = mng.transport
 	tx.tm = mng
@@ -89,27 +96,45 @@ func (mng *Manager) Send(r *base.Request, dest string) *ClientTransaction {
 	tx.tu = make(chan *base.Response, 3)
 	tx.tu_err = make(chan error, 1)
 
-	tx.timer_a_time = T1
-	tx.timer_a = timing.AfterFunc(tx.timer_a_time, func() {
-		tx.fsm.Spin(client_input_timer_a)
-	})
-	tx.Log().Debugf("client transaction %p, timer_b set to %v", tx, 64*T1)
-	tx.timer_b = timing.AfterFunc(64*T1, func() {
+	// RFC 3261 - 17.1.1.2
+	// If an unreliable transport is being used, the client transaction MUST start timer A with a value of T1.
+	// If a reliable transport is being used, the client transaction SHOULD NOT
+	// start timer A (Timer A controls request retransmissions).
+	// Timer A - retransmission
+	if !tx.transport.IsReliable() {
+		tx.Log().Debugf("client transaction %p, timer_a set to %v", tx, Timer_A)
+		tx.timer_a_time = Timer_A
+		tx.timer_a = timing.AfterFunc(tx.timer_a_time, func() {
+			tx.Log().Debugf("client transaction %p, timer_a fired", tx)
+			tx.fsm.Spin(client_input_timer_a)
+		})
+	}
+	// Timer B - timeout
+	tx.Log().Debugf("client transaction %p, timer_b set to %v", tx, Timer_B)
+	tx.timer_b = timing.AfterFunc(Timer_B, func() {
 		tx.Log().Debugf("client transaction %p, timer_b fired", tx)
 		tx.fsm.Spin(client_input_timer_b)
 	})
 
 	// Timer D is set to 32 seconds for unreliable transports, and 0 seconds otherwise.
-	tx.timer_d_time = 32 * time.Second
+	if tx.transport.IsReliable() {
+		tx.timer_d_time = 0
+	} else {
+		tx.timer_d_time = Timer_D
+	}
 
-	err := mng.transport.Send(dest, r)
+	err := mng.transport.Send(dest, req)
 	if err != nil {
-		tx.Log().Warnf("failed to send message: %s", err.Error())
+		tx.Log().Warnf("failed to send request %s: %s", req.Short(), err)
+		tx.lastErr = err
 		tx.fsm.Spin(client_input_transport_err)
 	}
 
 	if err := mng.putClientTx(tx); err != nil {
-		tx.Log().Warn(err)
+		tx.Log().Warnf("failed to store client transaction %p: %s", tx, err)
+		// TODO should tx transition to terminated state?
+		//tx.lastErr = err
+		//tx.fsm.Spin(client_state_terminated)
 	}
 
 	return tx
@@ -120,6 +145,9 @@ func (mng *Manager) correlate(res *base.Response) {
 	tx, err := mng.getClientTx(res)
 	if err != nil {
 		res.Log().Warn(err)
+		// RFC 3261 - 17.1.1.2.
+		// Not matched responses should be passed directly to the UA
+		mng.responses <- res
 		return
 	}
 
@@ -164,7 +192,10 @@ func (mng *Manager) request(req *base.Request) {
 	tx.tu_err = make(chan error, 1)
 	tx.ack = make(chan *base.Request, 1)
 
-	if req.Method != base.ACK {
+	// RFC 3261 8.2.6.1
+	// UASs SHOULD NOT issue a provisional response for a non-INVITE request.
+	// Rather, UASs SHOULD generate a final response to a non-INVITE request as soon as possible.
+	if req.Method == base.INVITE {
 		// Send a 100 Trying immediately.
 		// Technically we shouldn't do this if we trust the user to do it within 200ms,
 		// but I'm not sure how to handle that situation right now.
@@ -184,21 +215,5 @@ func (mng *Manager) request(req *base.Request) {
 func (mng *Manager) sendPresumptiveTrying(tx *ServerTransaction) {
 	tx.Log().Infof("sending '100 Trying' auto response on transaction %p", tx)
 	// Pretend the user sent us a 100 to send.
-	trying := base.NewResponse(
-		"SIP/2.0",
-		100,
-		"Trying",
-		[]base.SipHeader{},
-		"",
-		log.StandardLogger(),
-	)
-
-	base.CopyHeaders("Via", tx.origin, trying)
-	base.CopyHeaders("From", tx.origin, trying)
-	base.CopyHeaders("To", tx.origin, trying)
-	base.CopyHeaders("Call-Id", tx.origin, trying)
-	base.CopyHeaders("CSeq", tx.origin, trying)
-
-	tx.lastResp = trying
-	tx.fsm.Spin(server_input_user_1xx)
+	tx.Trying()
 }

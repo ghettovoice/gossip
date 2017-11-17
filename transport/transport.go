@@ -19,6 +19,7 @@ type Manager interface {
 	Send(addr string, message base.SipMessage) error
 	Stop()
 	GetChannel() Listener
+	IsReliable() bool
 }
 
 type manager struct {
@@ -73,6 +74,10 @@ func (manager *manager) Send(addr string, message base.SipMessage) error {
 func (manager *manager) Stop() {
 	manager.transport.Stop()
 	manager.notifier.stop()
+}
+
+func (manager *manager) IsReliable() bool {
+	return manager.transport.IsReliable()
 }
 
 type notifier struct {

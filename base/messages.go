@@ -46,7 +46,9 @@ type SipMessage interface {
 
 	// Adds a header to this message.
 	AddHeader(h SipHeader)
+	AddFrontHeader(h SipHeader)
 	SetHeader(h SipHeader, replace bool)
+	SetFrontHeader(h SipHeader, replace bool)
 
 	// Returns a slice of all headers of the given type.
 	// If there are no headers of the requested type, returns an empty slice.
@@ -143,6 +145,22 @@ func (hs *headers) SetHeader(h SipHeader, remove bool) {
 	}
 
 	hs.AddHeader(h)
+}
+
+// SetHeader works like AddFrontHeader but can drop existing header.
+func (hs *headers) SetFrontHeader(h SipHeader, remove bool) {
+	name := strings.ToLower(h.Name())
+	_, found := hs.headers[name]
+	if remove && found {
+		delete(hs.headers, name)
+		for i, entry := range hs.headerOrder {
+			if entry == name {
+				hs.headerOrder = append(hs.headerOrder[:i], hs.headerOrder[i+1:]...)
+			}
+		}
+	}
+
+	hs.AddFrontHeader(h)
 }
 
 // AddFrontHeader adds header to the front of header list
@@ -337,7 +355,14 @@ func CopyHeaders(name string, from, to SipMessage) {
 	for _, h := range from.Headers(name) {
 		to.AddHeader(h.Copy())
 	}
+}
 
+// CopyFrontHeaders works like CopyHeaders but adds headers to the front.
+func CopyFrontHeaders(name string, from, to SipMessage) {
+	name = strings.ToLower(name)
+	for _, h := range from.Headers(name) {
+		to.AddFrontHeader(h.Copy())
+	}
 }
 
 // message incorporates generic message methods.
@@ -550,4 +575,8 @@ func (response *Response) String() string {
 	buffer.WriteString("\r\n" + response.Body())
 
 	return buffer.String()
+}
+
+func (response *Response) Is2xx() bool {
+	return response.StatusCode >= 200 && response.StatusCode < 300
 }
