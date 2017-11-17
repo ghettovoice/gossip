@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"fmt"
 	"strings"
+
+	"github.com/ghettovoice/gossip/log"
 )
 
 // A representation of a SIP method.
@@ -38,11 +40,15 @@ const (
 
 // Internal representation of a SIP message - either a Request or a Response.
 type SipMessage interface {
+	log.WithLocalLogger
 	// Yields a flat, string representation of the SIP message suitable for sending out over the wire.
 	String() string
 
 	// Adds a header to this message.
 	AddHeader(h SipHeader)
+	AddFrontHeader(h SipHeader)
+	SetHeader(h SipHeader, replace bool)
+	SetFrontHeader(h SipHeader, replace bool)
 
 	// Returns a slice of all headers of the given type.
 	// If there are no headers of the requested type, returns an empty slice.
@@ -57,11 +63,27 @@ type SipMessage interface {
 	// Remove the specified header from the message.
 	RemoveHeader(header SipHeader) error
 
+	SipVersion() string
+	SetSipVersion(version string)
+
 	// Get the body of the message, as a string.
-	GetBody() string
+	Body() string
 
 	// Set the body of the message.
 	SetBody(body string)
+	// StartLine returns first line of message.
+	StartLine() string
+	// Helper getters
+	CallId() (*CallId, error)
+	Via() (*ViaHeader, error)
+	// ViaHop returns first hop from the first Via header.
+	ViaHop() (*ViaHop, error)
+	Branch() (MaybeString, error)
+	From() (*FromHeader, error)
+	FromTag() (MaybeString, error)
+	To() (*ToHeader, error)
+	ToTag() (MaybeString, error)
+	CSeq() (*CSeq, error)
 }
 
 // A shared type for holding headers and their ordering.
@@ -73,19 +95,24 @@ type headers struct {
 	headerOrder []string
 }
 
-func newHeaders() (result headers) {
-	result.headers = make(map[string][]SipHeader)
-	return result
+func newHeaders(hdrs []SipHeader) *headers {
+	hs := new(headers)
+	hs.headers = make(map[string][]SipHeader)
+	hs.headerOrder = make([]string, 0)
+	for _, header := range hdrs {
+		hs.AddHeader(header)
+	}
+	return hs
 }
 
-func (h headers) String() string {
+func (hs headers) String() string {
 	buffer := bytes.Buffer{}
 	// Construct each header in turn and add it to the message.
-	for typeIdx, name := range h.headerOrder {
-		headers := h.headers[name]
+	for typeIdx, name := range hs.headerOrder {
+		headers := hs.headers[name]
 		for idx, header := range headers {
 			buffer.WriteString(header.String())
-			if typeIdx < len(h.headerOrder) || idx < len(headers) {
+			if typeIdx < len(hs.headerOrder) || idx < len(headers) {
 				buffer.WriteString("\r\n")
 			}
 		}
@@ -95,11 +122,7 @@ func (h headers) String() string {
 
 // Add the given header.
 func (hs *headers) AddHeader(h SipHeader) {
-	if hs.headers == nil {
-		hs.headers = map[string][]SipHeader{}
-		hs.headerOrder = []string{}
-	}
-	name := h.Name()
+	name := strings.ToLower(h.Name())
 	if _, ok := hs.headers[name]; ok {
 		hs.headers[name] = append(hs.headers[name], h)
 	} else {
@@ -108,15 +131,43 @@ func (hs *headers) AddHeader(h SipHeader) {
 	}
 }
 
+// SetHeader works like AddHeader but can drop existing header.
+func (hs *headers) SetHeader(h SipHeader, remove bool) {
+	name := strings.ToLower(h.Name())
+	_, found := hs.headers[name]
+	if remove && found {
+		delete(hs.headers, name)
+		for i, entry := range hs.headerOrder {
+			if entry == name {
+				hs.headerOrder = append(hs.headerOrder[:i], hs.headerOrder[i+1:]...)
+			}
+		}
+	}
+
+	hs.AddHeader(h)
+}
+
+// SetHeader works like AddFrontHeader but can drop existing header.
+func (hs *headers) SetFrontHeader(h SipHeader, remove bool) {
+	name := strings.ToLower(h.Name())
+	_, found := hs.headers[name]
+	if remove && found {
+		delete(hs.headers, name)
+		for i, entry := range hs.headerOrder {
+			if entry == name {
+				hs.headerOrder = append(hs.headerOrder[:i], hs.headerOrder[i+1:]...)
+			}
+		}
+	}
+
+	hs.AddFrontHeader(h)
+}
+
 // AddFrontHeader adds header to the front of header list
 // if there is no header has h's name, add h to the tail of all headers
 // if there are some headers have h's name, add h to front of the sublist
 func (hs *headers) AddFrontHeader(h SipHeader) {
-	if hs.headers == nil {
-		hs.headers = map[string][]SipHeader{}
-		hs.headerOrder = []string{}
-	}
-	name := h.Name()
+	name := strings.ToLower(h.Name())
 	if hdrs, ok := hs.headers[name]; ok {
 		newHdrs := make([]SipHeader, 1, len(hdrs)+1)
 		newHdrs[0] = h
@@ -129,6 +180,7 @@ func (hs *headers) AddFrontHeader(h SipHeader) {
 
 // Gets some headers.
 func (hs *headers) Headers(name string) []SipHeader {
+	name = strings.ToLower(name)
 	if hs.headers == nil {
 		hs.headers = map[string][]SipHeader{}
 		hs.headerOrder = []string{}
@@ -140,100 +192,130 @@ func (hs *headers) Headers(name string) []SipHeader {
 	}
 }
 
-// Copy all headers of one type from one message to another.
-// Appending to any headers that were already there.
-func CopyHeaders(name string, from, to SipMessage) {
-	for _, h := range from.Headers(name) {
-		to.AddHeader(h.Copy())
-	}
-
-}
-
-// A SIP request (c.f. RFC 3261 section 7.1).
-type Request struct {
-	// Which method this request is, e.g. an INVITE or a REGISTER.
-	Method Method
-
-	// The Request URI. This indicates the user to whom this request is being addressed.
-	Recipient Uri
-
-	// The version of SIP used in this message, e.g. "SIP/2.0".
-	SipVersion string
-
-	// A Request has headers.
-	headers
-
-	// The order the headers should be displayed in.
-	headerOrder []string
-
-	// The application data of the message.
-	Body string
-}
-
-func NewRequest(method Method, recipient Uri, sipVersion string, headers []SipHeader, body string) (request *Request) {
-	request = new(Request)
-	request.Method = method
-	request.SipVersion = sipVersion
-	request.Recipient = recipient
-	request.headers = newHeaders()
-	request.Body = body
-
-	for _, header := range headers {
-		request.AddHeader(header)
-	}
-
-	return
-}
-
-func (request *Request) String() string {
-	var buffer bytes.Buffer
-
-	// Every SIP request starts with a Request Line - RFC 2361 7.1.
-	buffer.WriteString(fmt.Sprintf("%s %s %s\r\n",
-		(string)(request.Method),
-		request.Recipient.String(),
-		request.SipVersion))
-
-	buffer.WriteString(request.headers.String())
-
-	// If the request has a message body, add it.
-	buffer.WriteString("\r\n" + request.Body)
-
-	return buffer.String()
-}
-
-func (request *Request) Short() string {
-	var buffer bytes.Buffer
-
-	buffer.WriteString(fmt.Sprintf("%s %s %s",
-		(string)(request.Method),
-		request.Recipient.String(),
-		request.SipVersion))
-
-	cseqs := request.Headers("CSeq")
-	if len(cseqs) > 0 {
-		buffer.WriteString(fmt.Sprintf(" (CSeq: %s)", (cseqs[0].(*CSeq)).String()))
-	}
-
-	return buffer.String()
-}
-
-func (request *Request) AllHeaders() []SipHeader {
+func (hs *headers) AllHeaders() []SipHeader {
 	allHeaders := make([]SipHeader, 0)
-	for _, key := range request.headers.headerOrder {
-		allHeaders = append(allHeaders, request.headers.headers[key]...)
+	for _, key := range hs.headerOrder {
+		allHeaders = append(allHeaders, hs.headers[key]...)
 	}
 
 	return allHeaders
 }
 
-func (request *Request) RemoveHeader(header SipHeader) error {
-	errNoMatch := fmt.Errorf("cannot remove header '%s' from request '%s' as it is not present",
-		header.String(), request.Short())
-	name := header.Name()
+func (hs *headers) CallId() (*CallId, error) {
+	hdrs := hs.Headers("Call-Id")
+	if len(hdrs) == 0 {
+		return nil, fmt.Errorf("'Call-Id' header not found")
+	}
+	callId, ok := hdrs[0].(*CallId)
+	if !ok {
+		return nil, fmt.Errorf("Headers('Call-Id') returned non 'Call-Id' header")
+	}
+	return callId, nil
+}
 
-	headersOfSameType, isMatch := request.headers.headers[name]
+func (hs *headers) Via() (*ViaHeader, error) {
+	hdrs := hs.Headers("Via")
+	if len(hdrs) == 0 {
+		return nil, fmt.Errorf("'Via' header not found")
+	}
+	via, ok := hdrs[0].(*ViaHeader)
+	if !ok {
+		return nil, fmt.Errorf("Headers('Via') returned non 'Via' header")
+	}
+	return via, nil
+}
 
+func (hs *headers) ViaHop() (*ViaHop, error) {
+	via, err := hs.Via()
+	if err != nil {
+		return nil, err
+	}
+	if len(*via) == 0 {
+		return nil, fmt.Errorf("no hops found in the first 'Via' header")
+	}
+	return (*via)[0], nil
+}
+
+func (hs *headers) Branch() (MaybeString, error) {
+	via, err := hs.Via()
+	if err != nil {
+		return nil, err
+	}
+	branch, ok := (*via)[0].Params.Get("branch")
+	if !ok {
+		return nil, fmt.Errorf("no 'branch' parameter on top 'Via' header")
+	}
+	return branch, nil
+}
+
+func (hs *headers) From() (*FromHeader, error) {
+	hdrs := hs.Headers("From")
+	if len(hdrs) == 0 {
+		return nil, fmt.Errorf("'From' header not found")
+	}
+	from, ok := hdrs[0].(*FromHeader)
+	if !ok {
+		return nil, fmt.Errorf("Headers('From') returned non 'From' header")
+	}
+	return from, nil
+}
+
+func (hs *headers) FromTag() (MaybeString, error) {
+	from, err := hs.From()
+	if err != nil {
+		return nil, err
+	}
+	tag, ok := from.Params.Get("tag")
+	if !ok {
+		return nil, fmt.Errorf("no 'tag' parameter on 'From' header")
+	}
+	return tag, nil
+}
+
+func (hs *headers) To() (*ToHeader, error) {
+	hdrs := hs.Headers("To")
+	if len(hdrs) == 0 {
+		return nil, fmt.Errorf("'To' header not found")
+	}
+	to, ok := hdrs[0].(*ToHeader)
+	if !ok {
+		return nil, fmt.Errorf("Headers('To') returned non 'To' header")
+	}
+	return to, nil
+}
+
+func (hs *headers) ToTag() (MaybeString, error) {
+	to, err := hs.To()
+	if err != nil {
+		return nil, err
+	}
+	tag, ok := to.Params.Get("tag")
+	if !ok {
+		return nil, fmt.Errorf("no 'tag' parameter on 'To' header")
+	}
+	return tag, nil
+}
+
+func (hs *headers) CSeq() (*CSeq, error) {
+	hdrs := hs.Headers("CSeq")
+	if len(hdrs) == 0 {
+		return nil, fmt.Errorf("'CSeq' header not found")
+	}
+	cseq, ok := hdrs[0].(*CSeq)
+	if !ok {
+		return nil, fmt.Errorf("Headers('CSeq') returned non 'CSeq' header")
+	}
+	return cseq, nil
+}
+
+func (hs *headers) RemoveHeader(header SipHeader) error {
+	errNoMatch := fmt.Errorf(
+		"cannot remove header '%s' from message as it is not present",
+		header.String(),
+	)
+	name := strings.ToLower(header.Name())
+
+	headersOfSameType, isMatch := hs.headers[name]
 	if !isMatch || len(headersOfSameType) == 0 {
 		return errNoMatch
 	}
@@ -241,7 +323,7 @@ func (request *Request) RemoveHeader(header SipHeader) error {
 	found := false
 	for idx, hdr := range headersOfSameType {
 		if hdr == header {
-			request.headers.headers[name] = append(headersOfSameType[:idx], headersOfSameType[idx+1:]...)
+			hs.headers[name] = append(headersOfSameType[:idx], headersOfSameType[idx+1:]...)
 			found = true
 			break
 		}
@@ -250,15 +332,15 @@ func (request *Request) RemoveHeader(header SipHeader) error {
 		return errNoMatch
 	}
 
-	if len(request.headers.headers[name]) == 0 {
+	if len(hs.headers[name]) == 0 {
 		// The header we removed was the only one of its type.
 		// Tidy up the header structure by removing the empty list value from the header map,
 		// and removing the entry from the headerOrder list.
-		delete(request.headers.headers, name)
+		delete(hs.headers, name)
 
-		for idx, entry := range request.headerOrder {
+		for idx, entry := range hs.headerOrder {
 			if entry == name {
-				request.headers.headerOrder = append(request.headerOrder[:idx], request.headerOrder[idx+1:]...)
+				hs.headerOrder = append(hs.headerOrder[:idx], hs.headerOrder[idx+1:]...)
 			}
 		}
 	}
@@ -266,26 +348,171 @@ func (request *Request) RemoveHeader(header SipHeader) error {
 	return nil
 }
 
-func (request *Request) GetBody() string {
-	return request.Body
+// Copy all headers of one type from one message to another.
+// Appending to any headers that were already there.
+func CopyHeaders(name string, from, to SipMessage) {
+	name = strings.ToLower(name)
+	for _, h := range from.Headers(name) {
+		to.AddHeader(h.Copy())
+	}
 }
 
-func (request *Request) SetBody(body string) {
-	request.Body = body
-	hdrs := request.Headers("Content-Length")
+// CopyFrontHeaders works like CopyHeaders but adds headers to the front.
+func CopyFrontHeaders(name string, from, to SipMessage) {
+	name = strings.ToLower(name)
+	for _, h := range from.Headers(name) {
+		to.AddFrontHeader(h.Copy())
+	}
+}
+
+// message incorporates generic message methods.
+type message struct {
+	// A response has headers.
+	*headers
+	// The version of SIP used in this message, e.g. "SIP/2.0".
+	sipVersion string
+	// The application data of the message.
+	body string
+	log  log.Logger
+}
+
+func (msg *message) SipVersion() string {
+	return msg.sipVersion
+}
+
+func (msg *message) SetSipVersion(version string) {
+	msg.sipVersion = version
+}
+
+func (msg *message) logFields() map[string]interface{} {
+	fields := make(map[string]interface{})
+	fields["msg-ptr"] = fmt.Sprintf("%p", msg)
+	// add cseq
+	if cseq, err := msg.CSeq(); err == nil {
+		fields["cseq"] = cseq
+	}
+	// add Call-Id
+	if callId, err := msg.CallId(); err == nil {
+		fields["call-id"] = string(*callId)
+	}
+	// add branch
+	if branch, err := msg.Branch(); err == nil {
+		fields["branch"] = branch
+	}
+	// add From
+	if from, err := msg.From(); err == nil {
+		fields["from"] = from
+	}
+	// add To
+	if to, err := msg.To(); err == nil {
+		fields["to"] = to
+	}
+
+	return fields
+}
+
+func (msg *message) Body() string {
+	return msg.body
+}
+
+func (msg *message) SetBody(body string) {
+	msg.body = body
+	hdrs := msg.Headers("Content-Length")
 	if len(hdrs) == 0 {
 		length := ContentLength(len(body))
-		request.AddHeader(length)
+		msg.AddHeader(length)
 	} else {
 		hdrs[0] = ContentLength(len(body))
 	}
 }
 
+func (msg *message) Log() log.Logger {
+	return msg.log.WithFields(msg.logFields())
+}
+
+// A SIP request (c.f. RFC 3261 section 7.1).
+type Request struct {
+	message
+	// Which method this request is, e.g. an INVITE or a REGISTER.
+	Method Method
+
+	// The Request URI. This indicates the user to whom this request is being addressed.
+	Recipient Uri
+}
+
+func NewRequest(
+	method Method,
+	recipient Uri,
+	sipVersion string,
+	headers []SipHeader,
+	body string,
+	logger log.Logger,
+) (request *Request) {
+	request = new(Request)
+	request.SetSipVersion(sipVersion)
+	request.headers = newHeaders(headers)
+	request.Method = method
+	request.Recipient = recipient
+	request.SetBody(body)
+	request.log = logger
+
+	return
+}
+
+// StartLine returns Request Line - RFC 2361 7.1.
+func (request *Request) StartLine() string {
+	var buffer bytes.Buffer
+
+	// Every SIP request starts with a Request Line - RFC 2361 7.1.
+	buffer.WriteString(
+		fmt.Sprintf(
+			"%s %s %s",
+			(string)(request.Method),
+			request.Recipient.String(),
+			request.SipVersion(),
+		),
+	)
+
+	return buffer.String()
+}
+
+func (request *Request) Short() string {
+	var buffer bytes.Buffer
+
+	buffer.WriteString(request.StartLine())
+
+	cseqs := request.Headers("CSeq")
+	if len(cseqs) > 0 {
+		buffer.WriteString(fmt.Sprintf(" (%s)", cseqs[0].(*CSeq).String()))
+	}
+
+	return buffer.String()
+}
+
+func (request *Request) String() string {
+	var buffer bytes.Buffer
+
+	// write message start line
+	buffer.WriteString(request.StartLine() + "\r\n")
+	// Write the headers.
+	buffer.WriteString(request.headers.String())
+	// If the request has a message body, add it.
+	buffer.WriteString("\r\n" + request.Body())
+
+	return buffer.String()
+}
+
+func (request *Request) IsInvite() bool {
+	return request.Method == INVITE
+}
+
+func (request *Request) IsAck() bool {
+	return request.Method == ACK
+}
+
 // A SIP response object  (c.f. RFC 3261 section 7.2).
 type Response struct {
-	// The version of SIP used in this message, e.g. "SIP/2.0".
-	SipVersion string
-
+	message
 	// The response code, e.g. 200, 401 or 500.
 	// This indicates the outcome of the originating request.
 	StatusCode uint16
@@ -294,44 +521,40 @@ type Response struct {
 	// clarification or explanation of the status code.
 	// This will vary between different SIP UAs, and should not be interpreted by the receiving UA.
 	Reason string
-
-	// A response has headers.
-	headers
-
-	// The application data of the message.
-	Body string
 }
 
-func NewResponse(sipVersion string, statusCode uint16, reason string, headers []SipHeader, body string) (response *Response) {
+func NewResponse(
+	sipVersion string,
+	statusCode uint16,
+	reason string,
+	headers []SipHeader,
+	body string,
+	logger log.Logger,
+) (response *Response) {
 	response = new(Response)
-	response.SipVersion = sipVersion
+	response.SetSipVersion(sipVersion)
+	response.headers = newHeaders(headers)
 	response.StatusCode = statusCode
 	response.Reason = reason
-	response.Body = body
-	response.headers = newHeaders()
-	response.headerOrder = make([]string, 0)
-
-	for _, header := range headers {
-		response.AddHeader(header)
-	}
+	response.SetBody(body)
+	response.log = logger
 
 	return
 }
 
-func (response *Response) String() string {
+// StartLine returns Response Status Line - RFC 2361 7.2.
+func (response *Response) StartLine() string {
 	var buffer bytes.Buffer
 
 	// Every SIP response starts with a Status Line - RFC 2361 7.2.
-	buffer.WriteString(fmt.Sprintf("%s %d %s\r\n",
-		response.SipVersion,
-		response.StatusCode,
-		response.Reason))
-
-	// Write the headers.
-	buffer.WriteString(response.headers.String())
-
-	// If the request has a message body, add it.
-	buffer.WriteString("\r\n" + response.Body)
+	buffer.WriteString(
+		fmt.Sprintf(
+			"%s %d %s",
+			response.SipVersion(),
+			response.StatusCode,
+			response.Reason,
+		),
+	)
 
 	return buffer.String()
 }
@@ -339,78 +562,49 @@ func (response *Response) String() string {
 func (response *Response) Short() string {
 	var buffer bytes.Buffer
 
-	buffer.WriteString(fmt.Sprintf("%s %d %s\r\n",
-		response.SipVersion,
-		response.StatusCode,
-		response.Reason))
+	buffer.WriteString(response.StartLine())
 
 	cseqs := response.Headers("CSeq")
 	if len(cseqs) > 0 {
-		buffer.WriteString(fmt.Sprintf(" (CSeq: %s)", (cseqs[0].(*CSeq)).String()))
+		buffer.WriteString(fmt.Sprintf(" (%s)", cseqs[0].(*CSeq).String()))
 	}
 
 	return buffer.String()
 }
 
-func (response *Response) AllHeaders() []SipHeader {
-	allHeaders := make([]SipHeader, 0)
-	for _, key := range response.headers.headerOrder {
-		allHeaders = append(allHeaders, response.headers.headers[key]...)
-	}
+func (response *Response) String() string {
+	var buffer bytes.Buffer
 
-	return allHeaders
+	// write message start line
+	buffer.WriteString(response.StartLine() + "\r\n")
+	// Write the headers.
+	buffer.WriteString(response.headers.String())
+	// If the request has a message body, add it.
+	buffer.WriteString("\r\n" + response.Body())
+
+	return buffer.String()
 }
 
-func (response *Response) RemoveHeader(header SipHeader) error {
-	errNoMatch := fmt.Errorf("cannot remove header '%s' from response '%s' as it is not present",
-		header.String(), response.Short())
-	name := header.Name()
-
-	headersOfSameType, isMatch := response.headers.headers[name]
-
-	if !isMatch || len(headersOfSameType) == 0 {
-		return errNoMatch
-	}
-
-	found := false
-	for idx, hdr := range headersOfSameType {
-		if hdr == header {
-			response.headers.headers[name] = append(headersOfSameType[:idx], headersOfSameType[idx+1:]...)
-			found = true
-			break
-		}
-	}
-	if !found {
-		return errNoMatch
-	}
-
-	if len(response.headers.headers[name]) == 0 {
-		// The header we removed was the only one of its type.
-		// Tidy up the header structure by removing the empty list value from the header map,
-		// and removing the entry from the headerOrder list.
-		delete(response.headers.headers, name)
-
-		for idx, entry := range response.headers.headerOrder {
-			if entry == name {
-				response.headers.headerOrder = append(response.headers.headerOrder[:idx], response.headers.headerOrder[idx+1:]...)
-			}
-		}
-	}
-
-	return nil
+func (response *Response) IsProvisional() bool {
+	return response.StatusCode < 200
 }
 
-func (response *Response) GetBody() string {
-	return response.Body
+func (response *Response) IsSuccess() bool {
+	return response.StatusCode >= 200 && response.StatusCode < 300
 }
 
-func (response *Response) SetBody(body string) {
-	response.Body = body
-	hdrs := response.Headers("Content-Length")
-	if len(hdrs) == 0 {
-		length := ContentLength(len(body))
-		response.AddHeader(length)
-	} else {
-		hdrs[0] = ContentLength(len(body))
-	}
+func (response *Response) IsRedirection() bool {
+	return response.StatusCode >= 300 && response.StatusCode < 400
+}
+
+func (response *Response) IsClientError() bool {
+	return response.StatusCode >= 400 && response.StatusCode < 500
+}
+
+func (response *Response) IsServerError() bool {
+	return response.StatusCode >= 500 && response.StatusCode < 600
+}
+
+func (response *Response) IsGlobalError() bool {
+	return response.StatusCode >= 600
 }

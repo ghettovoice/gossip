@@ -4,14 +4,12 @@ import (
 	"os"
 	"testing"
 	"time"
-)
 
-import (
-	"github.com/stefankopieczek/gossip/base"
-	"github.com/stefankopieczek/gossip/log"
-	"github.com/stefankopieczek/gossip/parser"
-	"github.com/stefankopieczek/gossip/testutils"
-	"github.com/stefankopieczek/gossip/timing"
+	"github.com/ghettovoice/gossip/base"
+	"github.com/ghettovoice/gossip/log"
+	"github.com/ghettovoice/gossip/parser"
+	"github.com/ghettovoice/gossip/testutils"
+	"github.com/ghettovoice/gossip/timing"
 )
 
 var c_LOG_LEVEL = log.WARN
@@ -140,9 +138,10 @@ func makeTestConn() *connection {
 	return &connection{
 		&testutils.DummyConn{},
 		true,
-		parser.NewParser(parsedMessages, errors, streamed),
+		parser.NewParser(parsedMessages, errors, streamed, log.StandardLogger()),
 		parsedMessages,
 		errors,
 		make(chan base.SipMessage),
+		log.StandardLogger(),
 	}
 }

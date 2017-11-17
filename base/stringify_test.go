@@ -5,6 +5,8 @@ package base
 import (
 	"fmt"
 	"testing"
+
+	"github.com/ghettovoice/gossip/log"
 )
 
 // Generic test for testing anything with a String() method.
@@ -34,6 +36,59 @@ func doTests(tests []stringTest, t *testing.T) {
 var port5060 uint16 = 5060
 var port6060 uint16 = 6060
 var noParams = NewParams()
+
+func TestMessage_String(t *testing.T) {
+	callId := CallId("call-1234567890")
+
+	doTests([]stringTest{
+		{
+			"Basic request test",
+			NewRequest(
+				"INVITE",
+				&SipUri{
+					User:      String{"bob"},
+					Password:  NoString{},
+					Host:      "far-far-away.com",
+					UriParams: noParams,
+					Headers:   noParams,
+				},
+				"SIP/2.0",
+				[]SipHeader{
+					&ToHeader{
+						DisplayName: String{"bob"},
+						Address: &SipUri{
+							User:      String{"bob"},
+							Password:  NoString{},
+							Host:      "far-far-away.com",
+							UriParams: noParams,
+							Headers:   noParams,
+						},
+						Params: noParams,
+					},
+					&FromHeader{
+						DisplayName: String{"alice"},
+						Address: &SipUri{
+							User:      String{"alice"},
+							Password:  NoString{},
+							Host:      "wonderland.com",
+							UriParams: noParams,
+							Headers:   noParams,
+						},
+						Params: NewParams().Add("tag", String{"qwerty"}),
+					},
+					&callId,
+				},
+				"",
+				log.StandardLogger(),
+			),
+			"INVITE sip:bob@far-far-away.com SIP/2.0\r\n" +
+				"To: \"bob\" <sip:bob@far-far-away.com>\r\n" +
+				"From: \"alice\" <sip:alice@wonderland.com>;tag=qwerty\r\n" +
+				"Call-Id: call-1234567890\r\n" +
+				"Content-Length: 0\r\n\r\n",
+		},
+	}, t)
+}
 
 func TestSipUri(t *testing.T) {
 	doTests([]stringTest{

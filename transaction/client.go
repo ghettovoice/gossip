@@ -1,303 +1,143 @@
 package transaction
 
 import (
+	"fmt"
+	"time"
+
 	"github.com/discoviking/fsm"
-	"github.com/stefankopieczek/gossip/base"
-	"github.com/stefankopieczek/gossip/log"
-	"github.com/stefankopieczek/gossip/timing"
+	"github.com/ghettovoice/gossip/base"
+	"github.com/ghettovoice/gossip/timing"
 )
 
-// SIP Client Transaction FSM
-// Implements the behaviour described in RFC 3261 section 17.1
+// ClientTransaction describes SIP client transaction.
+type ClientTransaction struct {
+	transaction
 
-// FSM States
-const (
-	client_state_calling = iota
-	client_state_proceeding
-	client_state_completed
-	client_state_terminated
-)
+	tu           chan *base.Response // Channel to transaction user.
+	tu_err       chan error          // Channel to report up errors to TU.
+	timer_a_time time.Duration       // Current duration of timer A.
+	timer_a      timing.Timer
+	timer_b      timing.Timer
+	timer_d_time time.Duration // Current duration of timer A.
+	timer_d      timing.Timer
+}
 
-// FSM Inputs
-const (
-	client_input_1xx fsm.Input = iota
-	client_input_2xx
-	client_input_300_plus
-	client_input_timer_a
-	client_input_timer_b
-	client_input_timer_d
-	client_input_transport_err
-	client_input_delete
-)
-
-// Initialises the correct kind of FSM based on request method.
-func (tx *ClientTransaction) initFSM() {
-	if tx.origin.Method == base.INVITE {
-		tx.initInviteFSM()
-	} else {
-		tx.initNonInviteFSM()
+func (tx *ClientTransaction) Delete() {
+	tx.Log().Debugf("deleting transaction %p from manager %p", tx, tx.tm)
+	err := tx.tm.delClientTx(tx)
+	if err != nil {
+		tx.Log().Warn(err)
+		return
 	}
 }
 
-func (tx *ClientTransaction) initInviteFSM() {
-	log.Debug("Initialising client INVITE transaction FSM")
-
-	// Define Actions
-
-	// Resend the request.
-	act_resend := func() fsm.Input {
-		log.Debug("Client transaction %p, act_resend", tx)
-		tx.timer_a_time *= 2
-		tx.timer_a.Reset(tx.timer_a_time)
-		tx.resend()
-		return fsm.NO_INPUT
+func (tx *ClientTransaction) Receive(msg base.SipMessage) {
+	res, ok := msg.(*base.Response)
+	if !ok {
+		tx.Log().Errorf("client transaction %p received wrong message %s, response expected", tx, msg.Short())
+		return
 	}
 
-	// Just pass up the latest response.
-	act_passup := func() fsm.Input {
-		log.Debug("Client transaction %p, act_passup", tx)
-		tx.passUp()
-		return fsm.NO_INPUT
+	tx.lastResp = res
+
+	var input fsm.Input
+	switch {
+	case res.IsProvisional():
+		input = client_input_1xx
+	case res.IsSuccess():
+		input = client_input_2xx
+	default:
+		input = client_input_300_plus
 	}
 
-	// Handle 300+ responses.
-	// Pass up response and send ACK, start timer D.
-	act_300 := func() fsm.Input {
-		log.Debug("Client transaction %p, act_300", tx)
-		tx.passUp()
-		tx.Ack()
-		if tx.timer_d != nil {
-			tx.timer_d.Stop()
-		}
-		tx.timer_d = timing.AfterFunc(tx.timer_d_time, func() {
-			tx.fsm.Spin(client_input_timer_d)
-		})
-		return fsm.NO_INPUT
-	}
-
-	// Send an ACK.
-	act_ack := func() fsm.Input {
-		log.Debug("Client transaction %p, act_ack", tx)
-		tx.Ack()
-		return fsm.NO_INPUT
-	}
-
-	// Send up transport failure error.
-	act_trans_err := func() fsm.Input {
-		log.Debug("Client transaction %p, act_trans_err", tx)
-		tx.transportError()
-		return client_input_delete
-	}
-
-	// Send up timeout error.
-	act_timeout := func() fsm.Input {
-		log.Debug("Client transaction %p, act_timeout", tx)
-		tx.timeoutError()
-		return client_input_delete
-	}
-
-	// Pass up the response and delete the transaction.
-	act_passup_delete := func() fsm.Input {
-		log.Debug("Client transaction %p, act_passup_delete", tx)
-		tx.passUp()
-		tx.Delete()
-		return fsm.NO_INPUT
-	}
-
-	// Just delete the transaction.
-	act_delete := func() fsm.Input {
-		log.Debug("Client transaction %p, act_delete", tx)
-		tx.Delete()
-		return fsm.NO_INPUT
-	}
-
-	// Define States
-
-	// Calling
-	client_state_def_calling := fsm.State{
-		Index: client_state_calling,
-		Outcomes: map[fsm.Input]fsm.Outcome{
-			client_input_1xx:           {client_state_proceeding, act_passup},
-			client_input_2xx:           {client_state_terminated, act_passup_delete},
-			client_input_300_plus:      {client_state_completed, act_300},
-			client_input_timer_a:       {client_state_calling, act_resend},
-			client_input_timer_b:       {client_state_terminated, act_timeout},
-			client_input_transport_err: {client_state_terminated, act_trans_err},
-		},
-	}
-
-	// Proceeding
-	client_state_def_proceeding := fsm.State{
-		Index: client_state_proceeding,
-		Outcomes: map[fsm.Input]fsm.Outcome{
-			client_input_1xx:      {client_state_proceeding, act_passup},
-			client_input_2xx:      {client_state_terminated, act_passup_delete},
-			client_input_300_plus: {client_state_completed, act_300},
-			client_input_timer_a:  {client_state_proceeding, fsm.NO_ACTION},
-			client_input_timer_b:  {client_state_proceeding, fsm.NO_ACTION},
-		},
-	}
-
-	// Completed
-	client_state_def_completed := fsm.State{
-		Index: client_state_completed,
-		Outcomes: map[fsm.Input]fsm.Outcome{
-			client_input_1xx:           {client_state_completed, fsm.NO_ACTION},
-			client_input_2xx:           {client_state_completed, fsm.NO_ACTION},
-			client_input_300_plus:      {client_state_completed, act_ack},
-			client_input_timer_d:       {client_state_terminated, act_delete},
-			client_input_transport_err: {client_state_terminated, act_trans_err},
-			client_input_timer_a:       {client_state_completed, fsm.NO_ACTION},
-			client_input_timer_b:       {client_state_completed, fsm.NO_ACTION},
-		},
-	}
-
-	// Terminated
-	client_state_def_terminated := fsm.State{
-		Index: client_state_terminated,
-		Outcomes: map[fsm.Input]fsm.Outcome{
-			client_input_1xx:      {client_state_terminated, fsm.NO_ACTION},
-			client_input_2xx:      {client_state_terminated, fsm.NO_ACTION},
-			client_input_300_plus: {client_state_terminated, fsm.NO_ACTION},
-			client_input_timer_a:  {client_state_terminated, fsm.NO_ACTION},
-			client_input_timer_b:  {client_state_terminated, fsm.NO_ACTION},
-			client_input_delete:   {client_state_terminated, act_delete},
-		},
-	}
-
-	fsm, err := fsm.Define(
-		client_state_def_calling,
-		client_state_def_proceeding,
-		client_state_def_completed,
-		client_state_def_terminated,
-	)
-
-	if err != nil {
-		log.Severe("Failure to define INVITE client transaction fsm: %s", err.Error())
-	}
-
-	tx.fsm = fsm
+	tx.fsm.Spin(input)
 }
 
-func (tx *ClientTransaction) initNonInviteFSM() {
-	log.Debug("Initialising client non-INVITE transaction FSM")
-
-	// Define Actions
-
-	// Resend the request.
-	act_resend := func() fsm.Input {
-		tx.timer_a_time *= 2
-		// For non-INVITE, cap timer A at T2 seconds.
-		if tx.timer_a_time > T2 {
-			tx.timer_a_time = T2
-		}
-
-		tx.timer_a.Reset(tx.timer_a_time)
-		tx.resend()
-		return fsm.NO_INPUT
+// Resend the originating request.
+func (tx *ClientTransaction) resend() {
+	tx.Log().Infof("client transaction %p resending request: %v", tx, tx.origin.Short())
+	err := tx.transport.Send(tx.dest, tx.origin)
+	if err != nil {
+		tx.fsm.Spin(client_input_transport_err)
 	}
+}
 
-	// Just pass up the latest response.
-	act_passup := func() fsm.Input {
-		tx.passUp()
-		return fsm.NO_INPUT
+// Pass up the most recently received response to the TU.
+func (tx *ClientTransaction) passUp() {
+	tx.Log().Infof("client transaction %p passing up response: %v", tx, tx.lastResp.Short())
+	tx.tu <- tx.lastResp
+}
+
+// Send an error to the TU.
+func (tx *ClientTransaction) transportError() {
+	err := "failed to send request"
+	if tx.lastErr != nil {
+		err = tx.lastErr.Error()
 	}
+	tx.Log().Infof("client transaction %p had a transport-level error: %s", tx, err)
+	tx.tu_err <- fmt.Errorf("transport error occurred: %s", err)
+}
 
-	// Handle a final response.
-	act_final := func() fsm.Input {
-		tx.passUp()
-		if tx.timer_d != nil {
-			tx.timer_d.Stop()
-		}
-		tx.timer_d = timing.AfterFunc(tx.timer_d_time, func() {
-			tx.fsm.Spin(client_input_timer_d)
-		})
-		return fsm.NO_INPUT
-	}
+// Inform the TU that the transaction timed out.
+func (tx *ClientTransaction) timeoutError() {
+	tx.Log().Infof("client transaction %p timed out", tx)
+	tx.tu_err <- fmt.Errorf("client transaction %p timed out", tx)
+}
 
-	// Send up transport failure error.
-	act_trans_err := func() fsm.Input {
-		tx.transportError()
-		return client_input_delete
-	}
+// Return the channel we send responses on.
+func (tx *ClientTransaction) Responses() <-chan *base.Response {
+	return (<-chan *base.Response)(tx.tu)
+}
 
-	// Send up timeout error.
-	act_timeout := func() fsm.Input {
-		tx.timeoutError()
-		return client_input_delete
-	}
+// Return the channel we send errors on.
+func (tx *ClientTransaction) Errors() <-chan error {
+	return (<-chan error)(tx.tu_err)
+}
 
-	// Just delete the transaction.
-	act_delete := func() fsm.Input {
-		tx.Delete()
-		return fsm.NO_INPUT
-	}
-
-	// Define States
-
-	// "Trying"
-	client_state_def_calling := fsm.State{
-		Index: client_state_calling,
-		Outcomes: map[fsm.Input]fsm.Outcome{
-			client_input_1xx:           {client_state_proceeding, act_passup},
-			client_input_2xx:           {client_state_completed, act_final},
-			client_input_300_plus:      {client_state_completed, act_final},
-			client_input_timer_a:       {client_state_calling, act_resend},
-			client_input_timer_b:       {client_state_terminated, act_timeout},
-			client_input_transport_err: {client_state_terminated, act_trans_err},
-		},
-	}
-
-	// Proceeding
-	client_state_def_proceeding := fsm.State{
-		Index: client_state_proceeding,
-		Outcomes: map[fsm.Input]fsm.Outcome{
-			client_input_1xx:           {client_state_proceeding, act_passup},
-			client_input_2xx:           {client_state_completed, act_final},
-			client_input_300_plus:      {client_state_completed, act_final},
-			client_input_timer_a:       {client_state_proceeding, act_resend},
-			client_input_timer_b:       {client_state_terminated, act_timeout},
-			client_input_transport_err: {client_state_terminated, act_trans_err},
-		},
-	}
-
-	// Completed
-	client_state_def_completed := fsm.State{
-		Index: client_state_completed,
-		Outcomes: map[fsm.Input]fsm.Outcome{
-			client_input_1xx:      {client_state_completed, fsm.NO_ACTION},
-			client_input_2xx:      {client_state_completed, fsm.NO_ACTION},
-			client_input_300_plus: {client_state_completed, fsm.NO_ACTION},
-			client_input_timer_d:  {client_state_terminated, act_delete},
-			client_input_timer_a:  {client_state_completed, fsm.NO_ACTION},
-			client_input_timer_b:  {client_state_completed, fsm.NO_ACTION},
-		},
-	}
-
-	// Terminated
-	client_state_def_terminated := fsm.State{
-		Index: client_state_terminated,
-		Outcomes: map[fsm.Input]fsm.Outcome{
-			client_input_1xx:      {client_state_terminated, fsm.NO_ACTION},
-			client_input_2xx:      {client_state_terminated, fsm.NO_ACTION},
-			client_input_300_plus: {client_state_terminated, fsm.NO_ACTION},
-			client_input_timer_a:  {client_state_terminated, fsm.NO_ACTION},
-			client_input_timer_b:  {client_state_terminated, fsm.NO_ACTION},
-			client_input_timer_d:  {client_state_terminated, fsm.NO_ACTION},
-			client_input_delete:   {client_state_terminated, act_delete},
-		},
-	}
-
-	fsm, err := fsm.Define(
-		client_state_def_calling,
-		client_state_def_proceeding,
-		client_state_def_completed,
-		client_state_def_terminated,
+// ack sends an automatic ACK on non 2xx response - RFC 3261 - 17.1.1.3.
+func (tx *ClientTransaction) ack() {
+	ack := base.NewRequest(
+		base.ACK,
+		tx.origin.Recipient,
+		tx.origin.SipVersion(),
+		[]base.SipHeader{},
+		"",
+		tx.Log(),
 	)
 
+	// Copy headers from original request.
+	// TODO: Safety
+	base.CopyHeaders("From", tx.origin, ack)
+	base.CopyHeaders("Call-Id", tx.origin, ack)
+	base.CopyHeaders("Route", tx.origin, ack)
+	cseq, err := tx.origin.CSeq()
 	if err != nil {
-		log.Severe("Failure to define INVITE client transaction fsm: %s", err.Error())
+		tx.Log().Errorf("failed to send ACK request on client transaction %p: %s", tx, err)
+		return
 	}
+	cseq = cseq.Copy().(*base.CSeq)
+	cseq.MethodName = base.ACK
+	ack.AddHeader(cseq)
+	via, err := tx.origin.Via()
+	if err != nil {
+		tx.Log().Errorf("failed to send ACK request on client transaction %p: %s", tx, err)
+		return
+	}
+	via = via.Copy().(*base.ViaHeader)
+	ack.AddHeader(via)
+	// Copy headers from response.
+	base.CopyHeaders("To", tx.lastResp, ack)
 
-	tx.fsm = fsm
+	// Send the ACK.
+	err = tx.transport.Send(tx.dest, ack)
+	if err != nil {
+		tx.Log().Warnf("failed to send ACK request on client transaction %p: %s", tx, err)
+		tx.lastErr = err
+		tx.fsm.Spin(client_input_transport_err)
+	}
+}
+
+// Cancel sends CANCEL request - RFC 3261 - 9.
+func (tx *ClientTransaction) Cancel() {
+	// TODO implement
 }
