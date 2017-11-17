@@ -120,7 +120,7 @@ func (hs headers) String() string {
 
 // Add the given header.
 func (hs *headers) AddHeader(h SipHeader) {
-	name := h.Name()
+	name := strings.ToLower(h.Name())
 	if _, ok := hs.headers[name]; ok {
 		hs.headers[name] = append(hs.headers[name], h)
 	} else {
@@ -131,7 +131,7 @@ func (hs *headers) AddHeader(h SipHeader) {
 
 // SetHeader works like AddHeader but can drop existing header.
 func (hs *headers) SetHeader(h SipHeader, remove bool) {
-	name := h.Name()
+	name := strings.ToLower(h.Name())
 	_, found := hs.headers[name]
 	if remove && found {
 		delete(hs.headers, name)
@@ -149,7 +149,7 @@ func (hs *headers) SetHeader(h SipHeader, remove bool) {
 // if there is no header has h's name, add h to the tail of all headers
 // if there are some headers have h's name, add h to front of the sublist
 func (hs *headers) AddFrontHeader(h SipHeader) {
-	name := h.Name()
+	name := strings.ToLower(h.Name())
 	if hdrs, ok := hs.headers[name]; ok {
 		newHdrs := make([]SipHeader, 1, len(hdrs)+1)
 		newHdrs[0] = h
@@ -162,6 +162,7 @@ func (hs *headers) AddFrontHeader(h SipHeader) {
 
 // Gets some headers.
 func (hs *headers) Headers(name string) []SipHeader {
+	name = strings.ToLower(name)
 	if hs.headers == nil {
 		hs.headers = map[string][]SipHeader{}
 		hs.headerOrder = []string{}
@@ -294,7 +295,7 @@ func (hs *headers) RemoveHeader(header SipHeader) error {
 		"cannot remove header '%s' from message as it is not present",
 		header.String(),
 	)
-	name := header.Name()
+	name := strings.ToLower(header.Name())
 
 	headersOfSameType, isMatch := hs.headers[name]
 	if !isMatch || len(headersOfSameType) == 0 {
@@ -332,6 +333,7 @@ func (hs *headers) RemoveHeader(header SipHeader) error {
 // Copy all headers of one type from one message to another.
 // Appending to any headers that were already there.
 func CopyHeaders(name string, from, to SipMessage) {
+	name = strings.ToLower(name)
 	for _, h := range from.Headers(name) {
 		to.AddHeader(h.Copy())
 	}
