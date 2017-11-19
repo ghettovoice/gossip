@@ -1,4 +1,4 @@
-package base
+package message
 
 // These tests confirm that our various structures stringify correctly.
 

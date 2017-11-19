@@ -8,7 +8,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/ghettovoice/gossip/base"
+	"github.com/ghettovoice/gossip/message"
 	"github.com/ghettovoice/gossip/log"
 	"github.com/ghettovoice/gossip/utils"
 )
@@ -45,7 +45,7 @@ type Parser interface {
 // The HeaderParser will receive arguments of the form ("max-forwards", "70").
 // It should return a slice of headers, which should have length > 1 unless it also returns an error.
 type HeaderParser func(headerName string, headerData string) (
-	headers []base.SipHeader, err error)
+	headers []message.SipHeader, err error)
 
 func defaultHeaderParsers() map[string]HeaderParser {
 	return map[string]HeaderParser{
@@ -69,8 +69,8 @@ func defaultHeaderParsers() map[string]HeaderParser {
 // This is more costly than reusing a parser, but is necessary when we do not
 // have a guarantee that all messages coming over a connection are from the
 // same endpoint (e.g. UDP).
-func ParseMessage(msgData []byte, logger log.Logger) (base.SipMessage, error) {
-	output := make(chan base.SipMessage, 0)
+func ParseMessage(msgData []byte, logger log.Logger) (message.SipMessage, error) {
+	output := make(chan message.SipMessage, 0)
 	errors := make(chan error, 0)
 	parser := NewParser(output, errors, false, logger)
 	defer parser.Stop()
@@ -98,7 +98,7 @@ func ParseMessage(msgData []byte, logger log.Logger) (base.SipMessage, error) {
 
 // 'streamed' should be set to true whenever the caller cannot reliably identify the starts and ends of messages from the transport frames,
 // e.g. when using streamed protocols such as TCP.
-func NewParser(output chan<- base.SipMessage, errs chan<- error, streamed bool, logger log.Logger) Parser {
+func NewParser(output chan<- message.SipMessage, errs chan<- error, streamed bool, logger log.Logger) Parser {
 	p := parser{streamed: streamed, log: logger}
 
 	// Configure the parser with the standard set of header parsers.
@@ -130,7 +130,7 @@ type parser struct {
 	streamed      bool
 	input         *parserBuffer
 	bodyLengths   utils.ElasticChan
-	output        chan<- base.SipMessage
+	output        chan<- message.SipMessage
 	errs          chan<- error
 	terminalErr   error
 	stopped       bool
@@ -171,7 +171,7 @@ func (p *parser) Stop() {
 
 // Consume input lines one at a time, producing base.SipMessage objects and sending them down p.output.
 func (p *parser) parse(requireContentLength bool) {
-	var message base.SipMessage
+	var message message.SipMessage
 
 	for {
 		// Parse the StartLine.
@@ -184,11 +184,11 @@ func (p *parser) parse(requireContentLength bool) {
 
 		if isRequest(startLine) {
 			method, recipient, sipVersion, err := parseRequestLine(startLine)
-			message = base.NewRequest(method, recipient, sipVersion, []base.SipHeader{}, "", p.Log())
+			message = message.NewRequest(method, recipient, sipVersion, []message.SipHeader{}, "", p.Log())
 			p.terminalErr = err
 		} else if isResponse(startLine) {
 			sipVersion, statusCode, reason, err := parseStatusLine(startLine)
-			message = base.NewResponse(sipVersion, statusCode, reason, []base.SipHeader{}, "", p.Log())
+			message = message.NewResponse(sipVersion, statusCode, reason, []message.SipHeader{}, "", p.Log())
 			p.terminalErr = err
 		} else {
 			p.terminalErr = fmt.Errorf("transmission beginning '%s' is not a SIP message", startLine)
@@ -204,7 +204,7 @@ func (p *parser) parse(requireContentLength bool) {
 		// Headers can be split across lines (marked by whitespace at the start of subsequent lines),
 		// so store lines into a buffer, and then flush and parse it when we hit the end of the header.
 		var buffer bytes.Buffer
-		headers := make([]base.SipHeader, 0)
+		headers := make([]message.SipHeader, 0)
 
 		flushBuffer := func() {
 			if buffer.Len() > 0 {
@@ -281,7 +281,7 @@ func (p *parser) parse(requireContentLength bool) {
 				break
 			}
 
-			contentLength = int(*(contentLengthHeaders[0].(*base.ContentLength)))
+			contentLength = int(*(contentLengthHeaders[0].(*message.ContentLength)))
 		} else {
 			// We're not in streaming mode, so the Write method should have calculated the length of the body for us.
 			contentLength = (<-p.bodyLengths.Out).(int)
@@ -296,10 +296,10 @@ func (p *parser) parse(requireContentLength bool) {
 		}
 
 		switch message.(type) {
-		case *base.Request:
-			message.(*base.Request).SetBody(body)
-		case *base.Response:
-			message.(*base.Response).SetBody(body)
+		case *message.Request:
+			message.(*message.Request).SetBody(body)
+		case *message.Response:
+			message.(*message.Response).SetBody(body)
 		default:
 			p.Log().Errorf("internal error - message %s is neither a request type nor a response type", message.Short())
 		}
@@ -374,19 +374,19 @@ func isResponse(startLine string) bool {
 //   INVITE bob@example.com SIP/2.0
 //   REGISTER jane@telco.com SIP/1.0
 func parseRequestLine(requestLine string) (
-	method base.Method, recipient base.Uri, sipVersion string, err error) {
+	method message.Method, recipient message.Uri, sipVersion string, err error) {
 	parts := strings.Split(requestLine, " ")
 	if len(parts) != 3 {
 		err = fmt.Errorf("request line should have 2 spaces: '%s'", requestLine)
 		return
 	}
 
-	method = base.Method(strings.ToUpper(parts[0]))
+	method = message.Method(strings.ToUpper(parts[0]))
 	recipient, err = ParseUri(parts[1])
 	sipVersion = parts[2]
 
 	switch recipient.(type) {
-	case *base.WildcardUri:
+	case *message.WildcardUri:
 		err = fmt.Errorf("wildcard URI '*' not permitted in request line: '%s'", requestLine)
 	}
 
@@ -415,10 +415,10 @@ func parseStatusLine(statusLine string) (
 // parseUri converts a string representation of a URI into a Uri object.
 // If the URI is malformed, or the URI schema is not recognised, an error is returned.
 // URIs have the general form of schema:address.
-func ParseUri(uriStr string) (uri base.Uri, err error) {
+func ParseUri(uriStr string) (uri message.Uri, err error) {
 	if strings.TrimSpace(uriStr) == "*" {
 		// Wildcard '*' URI used in the Contact headers of REGISTERs when unregistering.
-		return base.WildcardUri{}, nil
+		return message.WildcardUri{}, nil
 	}
 
 	colonIdx := strings.Index(uriStr, ":")
@@ -429,12 +429,12 @@ func ParseUri(uriStr string) (uri base.Uri, err error) {
 
 	switch strings.ToLower(uriStr[:colonIdx]) {
 	case "sip":
-		var sipUri base.SipUri
+		var sipUri message.SipUri
 		sipUri, err = ParseSipUri(uriStr)
 		uri = &sipUri
 	case "sips":
 		// SIPS URIs have the same form as SIP uris, so we use the same parser.
-		var sipUri base.SipUri
+		var sipUri message.SipUri
 		sipUri, err = ParseSipUri(uriStr)
 		uri = &sipUri
 	default:
@@ -445,7 +445,7 @@ func ParseUri(uriStr string) (uri base.Uri, err error) {
 }
 
 // ParseSipUri converts a string representation of a SIP or SIPS URI into a SipUri object.
-func ParseSipUri(uriStr string) (uri base.SipUri, err error) {
+func ParseSipUri(uriStr string) (uri message.SipUri, err error) {
 	// Store off the original URI in case we need to print it in an error.
 	uriStrCopy := uriStr
 
@@ -472,8 +472,8 @@ func ParseSipUri(uriStr string) (uri base.SipUri, err error) {
 	// SIP URIs may contain a user-info part, ending in a '@'.
 	// This is the only place '@' may occur, so we can use it to check for the
 	// existence of a user-info part.
-	uri.User = base.NoString{}
-	uri.Password = base.NoString{}
+	uri.User = message.NoString{}
+	uri.Password = message.NoString{}
 	endOfUserInfoPart := strings.Index(uriStr, "@")
 	if endOfUserInfoPart != -1 {
 		// A user-info part is present. These take the form:
@@ -487,12 +487,12 @@ func ParseSipUri(uriStr string) (uri base.SipUri, err error) {
 			// No password component; the whole of the user-info part before
 			// the '@' is a username.
 			user := uriStr[:endOfUserInfoPart]
-			uri.User = base.String{S: user}
+			uri.User = message.String{S: user}
 		} else {
 			user := uriStr[:endOfUsernamePart]
 			pwd := uriStr[endOfUsernamePart+1 : endOfUserInfoPart]
-			uri.User = base.String{S: user}
-			uri.Password = base.String{S: pwd}
+			uri.User = message.String{S: user}
+			uri.Password = message.String{S: pwd}
 		}
 		uriStr = uriStr[endOfUserInfoPart+1:]
 	}
@@ -513,8 +513,8 @@ func ParseSipUri(uriStr string) (uri base.SipUri, err error) {
 	if err != nil {
 		return
 	} else if len(uriStr) == 0 {
-		uri.UriParams = base.NewParams()
-		uri.Headers = base.NewParams()
+		uri.UriParams = message.NewParams()
+		uri.Headers = message.NewParams()
 		return
 	}
 
@@ -522,7 +522,7 @@ func ParseSipUri(uriStr string) (uri base.SipUri, err error) {
 	// These are key-value pairs separated by ';'.
 	// They end at the end of the URI, or at the start of any URI headers
 	// which may be present (denoted by an initial '?').
-	var uriParams base.Params
+	var uriParams message.Params
 	var n int
 	if uriStr[0] == ';' {
 		uriParams, n, err = parseParams(uriStr, ';', ';', '?', true, true)
@@ -530,14 +530,14 @@ func ParseSipUri(uriStr string) (uri base.SipUri, err error) {
 			return
 		}
 	} else {
-		uriParams, n = base.NewParams(), 0
+		uriParams, n = message.NewParams(), 0
 	}
 	uri.UriParams = uriParams
 	uriStr = uriStr[n:]
 
 	// Finally parse any URI headers.
 	// These are key-value pairs, starting with a '?' and separated by '&'.
-	var headers base.Params
+	var headers message.Params
 	headers, n, err = parseParams(uriStr, '?', '&', 0, true, false)
 	if err != nil {
 		return
@@ -587,9 +587,9 @@ func parseHostPort(rawText string) (host string, port *uint16, err error) {
 func parseParams(source string,
 	start uint8, sep uint8, end uint8,
 	quoteValues bool, permitSingletons bool) (
-	params base.Params, consumed int, err error) {
+	params message.Params, consumed int, err error) {
 
-	params = base.NewParams()
+	params = message.NewParams()
 
 	if len(source) == 0 {
 		// Key-value section is completely empty; return defaults.
@@ -632,14 +632,14 @@ parseLoop:
 				continue
 			}
 			if parsingKey && permitSingletons {
-				params.Add(buffer.String(), base.NoString{})
+				params.Add(buffer.String(), message.NoString{})
 			} else if parsingKey {
 				err = fmt.Errorf("singleton param '%s' when parsing params which disallow singletons: \"%s\"",
 					buffer.String(), source)
 				return
 			} else {
 				value := buffer.String()
-				params.Add(key, base.String{value})
+				params.Add(key, message.String{value})
 			}
 			buffer.Reset()
 			parsingKey = true
@@ -703,13 +703,13 @@ parseLoop:
 	if inQuotes {
 		err = fmt.Errorf("unclosed quotes in parameter string: %s", source)
 	} else if parsingKey && permitSingletons {
-		params.Add(buffer.String(), base.NoString{})
+		params.Add(buffer.String(), message.NoString{})
 	} else if parsingKey {
 		err = fmt.Errorf("singleton param '%s' when parsing params which disallow singletons: \"%s\"",
 			buffer.String(), source)
 	} else {
 		value := buffer.String()
-		params.Add(key, base.String{value})
+		params.Add(key, message.String{value})
 	}
 	return
 }
@@ -717,9 +717,9 @@ parseLoop:
 // Parse a header string, producing one or more SipHeader objects.
 // (SIP messages containing multiple headers of the same type can express them as a
 // single header containing a comma-separated argument list).
-func (p *parser) parseHeader(headerText string) (headers []base.SipHeader, err error) {
+func (p *parser) parseHeader(headerText string) (headers []message.SipHeader, err error) {
 	p.Log().Debugf("parser %p parsing header \"%s\"", p, headerText)
-	headers = make([]base.SipHeader, 0)
+	headers = make([]message.SipHeader, 0)
 
 	colonIdx := strings.Index(headerText, ":")
 	if colonIdx == -1 {
@@ -737,8 +737,8 @@ func (p *parser) parseHeader(headerText string) (headers []base.SipHeader, err e
 		// We have no registered parser for this header type,
 		// so we encapsulate the header data in a GenericHeader struct.
 		p.Log().Debugf("parser %p has no parser for header type %s", p, fieldName)
-		header := base.GenericHeader{HeaderName: fieldName, Contents: fieldText}
-		headers = []base.SipHeader{&header}
+		header := message.GenericHeader{HeaderName: fieldName, Contents: fieldText}
+		headers = []message.SipHeader{&header}
 	}
 
 	return
@@ -746,12 +746,12 @@ func (p *parser) parseHeader(headerText string) (headers []base.SipHeader, err e
 
 // Parse a To, From or Contact header line, producing one or more logical SipHeaders.
 func parseAddressHeader(headerName string, headerText string) (
-	headers []base.SipHeader, err error) {
+	headers []message.SipHeader, err error) {
 	switch headerName {
 	case "to", "from", "contact", "t", "f", "m":
-		var displayNames []base.MaybeString
-		var uris []base.Uri
-		var paramSets []base.Params
+		var displayNames []message.MaybeString
+		var uris []message.Uri
+		var paramSets []message.Params
 
 		// Perform the actual parsing. The rest of this method is just typeclass bookkeeping.
 		displayNames, uris, paramSets, err = parseAddressValues(headerText)
@@ -773,7 +773,7 @@ func parseAddressHeader(headerName string, headerText string) (
 		// It is assumed that all headers returned by parseAddressValues are of the same kind,
 		// although we do not check for this below.
 		for idx := 0; idx < len(displayNames); idx++ {
-			var header base.SipHeader
+			var header message.SipHeader
 			if headerName == "to" || headerName == "t" {
 				if idx > 0 {
 					// Only a single To header is permitted in a SIP message.
@@ -782,13 +782,13 @@ func parseAddressHeader(headerName string, headerText string) (
 							headerName, headerText)
 				}
 				switch uris[idx].(type) {
-				case base.WildcardUri:
+				case message.WildcardUri:
 					// The Wildcard '*' URI is only permitted in Contact headers.
 					err = fmt.Errorf("wildcard uri not permitted in to: "+
 						"header: %s", headerText)
 					return
 				default:
-					toHeader := base.ToHeader{DisplayName: displayNames[idx],
+					toHeader := message.ToHeader{DisplayName: displayNames[idx],
 						Address: uris[idx],
 						Params:  paramSets[idx]}
 					header = &toHeader
@@ -801,36 +801,36 @@ func parseAddressHeader(headerName string, headerText string) (
 							headerName, headerText)
 				}
 				switch uris[idx].(type) {
-				case base.WildcardUri:
+				case message.WildcardUri:
 					// The Wildcard '*' URI is only permitted in Contact headers.
 					err = fmt.Errorf("wildcard uri not permitted in from: "+
 						"header: %s", headerText)
 					return
 				default:
-					fromHeader := base.FromHeader{DisplayName: displayNames[idx],
+					fromHeader := message.FromHeader{DisplayName: displayNames[idx],
 						Address: uris[idx],
 						Params:  paramSets[idx]}
 					header = &fromHeader
 				}
 			} else if headerName == "contact" || headerName == "m" {
 				switch uris[idx].(type) {
-				case base.ContactUri:
-					if uris[idx].(base.ContactUri).IsWildcard() {
+				case message.ContactUri:
+					if uris[idx].(message.ContactUri).IsWildcard() {
 						if paramSets[idx].Length() > 0 {
 							// Wildcard headers do not contain parameters.
 							err = fmt.Errorf("wildcard contact header should contain no parameters: '%s",
 								headerText)
 							return
 						}
-						if _, ok := displayNames[idx].(base.String); ok {
+						if _, ok := displayNames[idx].(message.String); ok {
 							// Wildcard headers do not contain display names.
 							err = fmt.Errorf("wildcard contact header should contain no display name %s",
 								headerText)
 							return
 						}
 					}
-					contactHeader := base.ContactHeader{DisplayName: displayNames[idx],
-						Address: uris[idx].(base.ContactUri),
+					contactHeader := message.ContactHeader{DisplayName: displayNames[idx],
+						Address: uris[idx].(message.ContactUri),
 						Params:  paramSets[idx]}
 					header = &contactHeader
 				default:
@@ -849,8 +849,8 @@ func parseAddressHeader(headerName string, headerText string) (
 
 // Parse a string representation of a CSeq header, returning a slice of at most one CSeq.
 func parseCSeq(headerName string, headerText string) (
-	headers []base.SipHeader, err error) {
-	var cseq base.CSeq
+	headers []message.SipHeader, err error) {
+	var cseq message.CSeq
 
 	parts := splitByWhitespace(headerText)
 	if len(parts) != 2 {
@@ -872,23 +872,23 @@ func parseCSeq(headerName string, headerText string) (
 	}
 
 	cseq.SeqNo = uint32(seqno)
-	cseq.MethodName = base.Method(strings.TrimSpace(parts[1]))
+	cseq.MethodName = message.Method(strings.TrimSpace(parts[1]))
 
 	if strings.Contains(string(cseq.MethodName), ";") {
 		err = fmt.Errorf("unexpected ';' in CSeq body: %s", headerText)
 		return
 	}
 
-	headers = []base.SipHeader{&cseq}
+	headers = []message.SipHeader{&cseq}
 
 	return
 }
 
 // Parse a string representation of a Call-Id header, returning a slice of at most one CallId.
 func parseCallId(headerName string, headerText string) (
-	headers []base.SipHeader, err error) {
+	headers []message.SipHeader, err error) {
 	headerText = strings.TrimSpace(headerText)
-	var callId base.CallId = base.CallId(headerText)
+	var callId message.CallId = message.CallId(headerText)
 
 	if strings.ContainsAny(string(callId), c_ABNF_WS) {
 		err = fmt.Errorf("unexpected whitespace in CallId header body '%s'", headerText)
@@ -903,7 +903,7 @@ func parseCallId(headerName string, headerText string) (
 		return
 	}
 
-	headers = []base.SipHeader{&callId}
+	headers = []message.SipHeader{&callId}
 
 	return
 }
@@ -913,11 +913,11 @@ func parseCallId(headerName string, headerText string) (
 // these should not be treated as separate logical Via headers, but as multiple values on a single
 // Via header.
 func parseViaHeader(headerName string, headerText string) (
-	headers []base.SipHeader, err error) {
+	headers []message.SipHeader, err error) {
 	sections := strings.Split(headerText, ",")
-	var via base.ViaHeader = base.ViaHeader{}
+	var via message.ViaHeader = message.ViaHeader{}
 	for _, section := range sections {
-		var hop base.ViaHop
+		var hop message.ViaHop
 		parts := strings.Split(section, "/")
 
 		if len(parts) < 3 {
@@ -971,7 +971,7 @@ func parseViaHeader(headerName string, headerText string) (
 			if err != nil {
 				return
 			}
-			hop.Params = base.NewParams()
+			hop.Params = message.NewParams()
 		} else {
 			host, port, err = parseHostPort(viaBody[:paramsIdx])
 			if err != nil {
@@ -986,31 +986,31 @@ func parseViaHeader(headerName string, headerText string) (
 		via = append(via, &hop)
 	}
 
-	headers = []base.SipHeader{&via}
+	headers = []message.SipHeader{&via}
 	return
 }
 
 // Parse a string representation of a Max-Forwards header into a slice of at most one MaxForwards header object.
 func parseMaxForwards(headerName string, headerText string) (
-	headers []base.SipHeader, err error) {
-	var maxForwards base.MaxForwards
+	headers []message.SipHeader, err error) {
+	var maxForwards message.MaxForwards
 	var value uint64
 	value, err = strconv.ParseUint(strings.TrimSpace(headerText), 10, 32)
-	maxForwards = base.MaxForwards(value)
+	maxForwards = message.MaxForwards(value)
 
-	headers = []base.SipHeader{&maxForwards}
+	headers = []message.SipHeader{&maxForwards}
 	return
 }
 
 // Parse a string representation of a Content-Length header into a slice of at most one ContentLength header object.
 func parseContentLength(headerName string, headerText string) (
-	headers []base.SipHeader, err error) {
-	var contentLength base.ContentLength
+	headers []message.SipHeader, err error) {
+	var contentLength message.ContentLength
 	var value uint64
 	value, err = strconv.ParseUint(strings.TrimSpace(headerText), 10, 32)
-	contentLength = base.ContentLength(value)
+	contentLength = message.ContentLength(value)
 
-	headers = []base.SipHeader{&contentLength}
+	headers = []message.SipHeader{&contentLength}
 	return
 }
 
@@ -1019,8 +1019,8 @@ func parseContentLength(headerName string, headerText string) (
 // parseAddressValues is aware of < > bracketing and quoting, and will not
 // break on commas within these structures.
 func parseAddressValues(addresses string) (
-	displayNames []base.MaybeString, uris []base.Uri,
-	headerParams []base.Params, err error) {
+	displayNames []message.MaybeString, uris []message.Uri,
+	headerParams []message.Params, err error) {
 
 	prevIdx := 0
 	inBrackets := false
@@ -1038,9 +1038,9 @@ func parseAddressValues(addresses string) (
 		} else if char == '"' {
 			inQuotes = !inQuotes
 		} else if !inQuotes && !inBrackets && char == ',' {
-			var displayName base.MaybeString
-			var uri base.Uri
-			var params base.Params
+			var displayName message.MaybeString
+			var uri message.Uri
+			var params message.Params
 			displayName, uri, params, err =
 				parseAddressValue(addresses[prevIdx:idx])
 			if err != nil {
@@ -1067,10 +1067,10 @@ func parseAddressValues(addresses string) (
 // Note that this method will not accept a comma-separated list of addresses;
 // addresses in that form should be handled by parseAddressValues.
 func parseAddressValue(addressText string) (
-	displayName base.MaybeString, uri base.Uri,
-	headerParams base.Params, err error) {
+	displayName message.MaybeString, uri message.Uri,
+	headerParams message.Params, err error) {
 
-	headerParams = base.NewParams()
+	headerParams = message.NewParams()
 
 	if len(addressText) == 0 {
 		err = fmt.Errorf("address-type header has empty body")
@@ -1081,7 +1081,7 @@ func parseAddressValue(addressText string) (
 	addressText = strings.TrimSpace(addressText)
 
 	firstAngleBracket := findUnescaped(addressText, '<', quotes_delim)
-	displayName = base.NoString{}
+	displayName = message.NoString{}
 	if firstAngleBracket > 0 {
 		// We have an angle bracket, and it's not the first character.
 		// Since we have just trimmed whitespace, this means there must
@@ -1100,7 +1100,7 @@ func parseAddressValue(addressText string) (
 			}
 
 			nameField := addressText[:nextQuote]
-			displayName = base.String{S: nameField}
+			displayName = message.String{S: nameField}
 			addressText = addressText[nextQuote+1:]
 		} else {
 			// The display name is unquoted, so it is comprised of
@@ -1110,7 +1110,7 @@ func parseAddressValue(addressText string) (
 			// however we don't check for them here since it doesn't impact parsing.
 			// May as well be lenient.
 			nameField := addressText[:firstAngleBracket]
-			displayName = base.String{S: strings.TrimSpace(nameField)}
+			displayName = message.String{S: strings.TrimSpace(nameField)}
 			addressText = addressText[firstAngleBracket:]
 		}
 	}
@@ -1121,7 +1121,7 @@ func parseAddressValue(addressText string) (
 	var startOfParams int
 	if addressText[0] != '<' {
 		switch displayName.(type) {
-		case base.String:
+		case message.String:
 			// The address must be in <angle brackets> if a display name is
 			// present, so this is an invalid address line.
 			err = fmt.Errorf("invalid character '%c' following display "+

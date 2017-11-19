@@ -1,4 +1,4 @@
-package base
+package message
 
 import (
 	"bytes"

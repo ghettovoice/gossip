@@ -1,6 +1,6 @@
 package transport
 
-import "github.com/ghettovoice/gossip/base"
+import "github.com/ghettovoice/gossip/message"
 
 const (
 	bufSize            uint16 = 65535
@@ -10,21 +10,21 @@ const (
 // Layer is an transport layer RFC 3261 - 18.
 type Layer interface {
 	Listen(addr string) error
-	Send(addr string, msg base.SipMessage) error
+	Send(addr string, msg message.SipMessage) error
 	Stop()
 	// Messages returns channel with incoming messages
-	Messages() <-chan base.SipMessage
+	Messages() <-chan message.SipMessage
 	// Errors returns transport layers errors
 	Errors() <-chan error
 }
 
 type layer struct {
 	protocols map[Protocol]Protocol
-	messages  chan base.SipMessage
+	messages  chan message.SipMessage
 	errors    chan error
 }
 
-func (tl *layer) Messages() <-chan base.SipMessage {
+func (tl *layer) Messages() <-chan message.SipMessage {
 	return tl.messages
 }
 
