@@ -69,7 +69,7 @@ func (udp *Udp) Send(addr string, msg base.SipMessage) error {
 	return err
 }
 
-// todo RFC 18.2.1
+// todo RFC 18
 func (udp *Udp) listen(conn *net.UDPConn) {
 	log.Infof("begin listening for UDP on address %s", conn.LocalAddr())
 

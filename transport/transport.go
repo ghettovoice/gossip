@@ -129,7 +129,7 @@ func (n *notifier) forward() {
 
 func (n *notifier) stop() {
 	n.listenerLock.Lock()
-	for c, _ := range n.listeners {
+	for c := range n.listeners {
 		close(c)
 	}
 	n.listeners = nil
