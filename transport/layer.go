@@ -3,8 +3,8 @@ package transport
 import "github.com/ghettovoice/gossip/base"
 
 const (
-	bufSize           uint8 = 65535
-	listenerQueueSize uint8 = 10000
+	bufSize           uint16 = 65535
+	listenerQueueSize uint16 = 10000
 )
 
 // Layer is an transport layer RFC 3261 - 18.
